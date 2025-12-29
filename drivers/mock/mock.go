@@ -11,7 +11,6 @@ package mock
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -21,11 +20,11 @@ import (
 
 // Driver is an in-memory mock implementation of queen.Driver for testing.
 type Driver struct {
-	mu       sync.Mutex
-	applied  map[string]queen.Applied
-	locked   bool
-	initErr  error
-	lockErr  error
+	mu        sync.Mutex
+	applied   map[string]queen.Applied
+	locked    bool
+	initErr   error
+	lockErr   error
 	recordErr error
 }
 
@@ -184,20 +183,3 @@ func (d *Driver) Reset() {
 	d.applied = make(map[string]queen.Applied)
 	d.locked = false
 }
-
-// simulateTx is a helper that simulates transaction behavior for testing
-type simulateTx struct{}
-
-func (tx *simulateTx) Exec(query string, args ...interface{}) (sql.Result, error) {
-	return nil, fmt.Errorf("mock tx: Exec not implemented")
-}
-
-func (tx *simulateTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	// Successful execution (for mock purposes)
-	return &mockResult{}, nil
-}
-
-type mockResult struct{}
-
-func (r *mockResult) LastInsertId() (int64, error) { return 0, nil }
-func (r *mockResult) RowsAffected() (int64, error) { return 1, nil }

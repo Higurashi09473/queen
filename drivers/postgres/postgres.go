@@ -60,7 +60,7 @@ func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Explicitly ignore error on close
 
 	var applied []queen.Applied
 	for rows.Next() {

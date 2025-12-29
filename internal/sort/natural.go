@@ -9,15 +9,17 @@ import (
 
 // Compare compares two version strings using natural sort order.
 // Returns:
-//   -1 if a < b
-//    0 if a == b
-//   +1 if a > b
+//
+//	-1 if a < b
+//	 0 if a == b
+//	+1 if a > b
 //
 // Examples:
-//   Compare("1", "2") = -1
-//   Compare("10", "2") = 1
-//   Compare("v1", "v10") = -1
-//   Compare("user_001", "user_002") = -1
+//
+//	Compare("1", "2") = -1
+//	Compare("10", "2") = 1
+//	Compare("v1", "v10") = -1
+//	Compare("user_001", "user_002") = -1
 func Compare(a, b string) int {
 	ia, ib := 0, 0
 

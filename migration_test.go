@@ -124,8 +124,8 @@ func TestMigrationChecksum(t *testing.T) {
 			},
 		}
 
-		if m.Checksum() != "no-checksum-go-func" {
-			t.Errorf("Expected 'no-checksum-go-func', got %s", m.Checksum())
+		if m.Checksum() != noChecksumMarker {
+			t.Errorf("Expected '%s', got %s", noChecksumMarker, m.Checksum())
 		}
 	})
 }

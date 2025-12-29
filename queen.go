@@ -154,7 +154,7 @@ func (q *Queen) UpSteps(ctx context.Context, n int) error {
 		defer func() {
 			// Use background context for unlock to ensure it completes even if ctx is cancelled
 			unlockCtx := context.Background()
-			q.driver.Unlock(unlockCtx)
+			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
 		}()
 	}
 
@@ -208,7 +208,7 @@ func (q *Queen) Down(ctx context.Context, n int) error {
 		defer func() {
 			// Use background context for unlock to ensure it completes even if ctx is cancelled
 			unlockCtx := context.Background()
-			q.driver.Unlock(unlockCtx)
+			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
 		}()
 	}
 
@@ -264,7 +264,7 @@ func (q *Queen) Reset(ctx context.Context) error {
 		defer func() {
 			// Use background context for unlock to ensure it completes even if ctx is cancelled
 			unlockCtx := context.Background()
-			q.driver.Unlock(unlockCtx)
+			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
 		}()
 	}
 
@@ -326,7 +326,7 @@ func (q *Queen) Status(ctx context.Context) ([]MigrationStatus, error) {
 			status.AppliedAt = &applied.AppliedAt
 
 			// Check for checksum mismatch
-			if applied.Checksum != m.Checksum() && m.Checksum() != "no-checksum-go-func" {
+			if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
 				status.Status = StatusModified
 			}
 		}
@@ -373,7 +373,7 @@ func (q *Queen) Validate(ctx context.Context) error {
 
 		for _, m := range q.migrations {
 			if applied, ok := q.applied[m.Version]; ok {
-				if applied.Checksum != m.Checksum() && m.Checksum() != "no-checksum-go-func" {
+				if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
 					return fmt.Errorf("%w: migration %s (expected %s, got %s)",
 						ErrChecksumMismatch, m.Version, applied.Checksum, m.Checksum())
 				}

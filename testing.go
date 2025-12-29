@@ -39,7 +39,7 @@ func NewTest(t *testing.T, driver Driver) *TestHelper {
 
 	// Clean up when test ends
 	t.Cleanup(func() {
-		q.Close()
+		_ = q.Close() // Explicitly ignore error in cleanup
 	})
 
 	return &TestHelper{

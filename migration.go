@@ -53,9 +53,9 @@ type Migration struct {
 	// If not set, checksum validation will be skipped for Go functions.
 	ManualChecksum string
 
-	// computed checksum cache
+	// computed checksum cache (pointer to avoid copylocks issue)
+	checksumOnce *sync.Once
 	checksum     string
-	checksumOnce sync.Once
 }
 
 // M is a convenient alias for Migration, used in registration:
@@ -87,11 +87,17 @@ func (m *Migration) Validate() error {
 	return nil
 }
 
+const noChecksumMarker = "no-checksum-go-func"
+
 // Checksum returns a unique hash of the migration content.
 // For SQL migrations, it hashes UpSQL and DownSQL.
 // For Go function migrations with ManualChecksum, it uses that value.
 // For Go function migrations without ManualChecksum, it returns a special marker.
 func (m *Migration) Checksum() string {
+	if m.checksumOnce == nil {
+		m.checksumOnce = &sync.Once{}
+	}
+
 	m.checksumOnce.Do(func() {
 		// If manual checksum is provided, use it
 		if m.ManualChecksum != "" {
@@ -106,7 +112,7 @@ func (m *Migration) Checksum() string {
 		}
 
 		// For Go functions without manual checksum, use special marker
-		m.checksum = "no-checksum-go-func"
+		m.checksum = noChecksumMarker
 	})
 
 	return m.checksum
