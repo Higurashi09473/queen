@@ -53,7 +53,8 @@ type Migration struct {
 	// If not set, checksum validation will be skipped for Go functions.
 	ManualChecksum string
 
-	// computed checksum cache (pointer to avoid copylocks issue)
+	// Lazy-loaded checksum cache. sync.Once pointer prevents copylocks warning
+	// when Migration is passed by value.
 	checksumOnce *sync.Once
 	checksum     string
 }
@@ -87,6 +88,8 @@ func (m *Migration) Validate() error {
 	return nil
 }
 
+// noChecksumMarker indicates that checksum validation is disabled for Go function
+// migrations without an explicit ManualChecksum value.
 const noChecksumMarker = "no-checksum-go-func"
 
 // Checksum returns a unique hash of the migration content.

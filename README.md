@@ -1,8 +1,8 @@
 # Queen
 
-**Database migrations for Go, with royal treatment.**
+**Database migrations for Go.**
 
-Queen is a database migration library that lets you define migrations in code, not separate files. It supports both SQL and Go function migrations, with excellent testing helpers and a clean, chainable API.
+Queen is a database migration library that lets you define migrations in code, not separate files. It supports both SQL and Go function migrations, with built-in testing helpers and a simple, honey API.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/honeynil/queen.svg)](https://pkg.go.dev/github.com/honeynil/queen)
 [![Go Report Card](https://goreportcard.com/badge/github.com/honeynil/queen)](https://goreportcard.com/report/github.com/honeynil/queen)
@@ -15,7 +15,7 @@ Queen is a database migration library that lets you define migrations in code, n
 - **Migrations in code** - No separate `.sql` files cluttering your repo
 - **Hybrid approach** - Use SQL strings, Go functions, or mix both
 - **Testing helpers** - Built-in support for testing your migrations
-- **Natural sorting** - Smart version ordering: "1" < "2" < "10" < "100"
+- **Natural sorting** - Smart version ordering: "1" < "2" < "10" < "100", "user_1" < "user_10"
 - **Flexible versioning** - Use sequential numbers, prefixes, or any naming scheme
 - **Type-safe** - Full Go type safety for programmatic migrations
 - **PostgreSQL first** - Excellent Postgres support, more databases coming soon
@@ -232,39 +232,15 @@ if err := q.Validate(ctx); err != nil {
 }
 ```
 
-## Why Queen?
+## Philosophy
 
-### vs golang-migrate
+Queen follows the principle: **migrations are code, not files**. This approach enables:
+- Type safety and IDE support
+- Easier testing and refactoring
+- No file organization overhead
+- Full programmatic control when needed
 
-| Feature | Queen | golang-migrate |
-|---------|-------|----------------|
-| Migrations in code | Yes | No (separate files) |
-| No file clutter | Yes | No |
-| Go function migrations | Yes | Limited |
-| Testing helpers | Yes | No |
-| Natural sorting | Yes | No |
-| Type safety | Yes | No (SQL strings) |
-| Flexible versioning | Yes | Timestamps only |
-
-### vs goose
-
-| Feature | Queen | goose |
-|---------|-------|-------|
-| Migrations in code | Yes | Partial |
-| Chainable API | Yes | No |
-| No init() required | Yes | No |
-| Testing helpers | Yes | No |
-| Clean API | Yes | Inconsistent |
-
-### vs GORM AutoMigrate
-
-| Feature | Queen | GORM AutoMigrate |
-|---------|-------|------------------|
-| Production safe | Yes | Unpredictable |
-| Rollback support | Yes | No |
-| Migration history | Yes | No |
-| ORM independent | Yes | Tied to GORM |
-| Control | Full | Limited |
+Queen is designed for developers who want clean, testable migrations without the ceremony.
 
 ## Configuration
 
@@ -320,26 +296,11 @@ func (q *Queen) Validate(ctx context.Context) error
 func (q *Queen) Close() error
 ```
 
-## Roadmap
+## What's Next
 
-### v0.x (Current)
-- Core library
-- PostgreSQL driver
-- Testing helpers
-- Natural sorting
-- Checksum validation
-
-### v1.0 (Planned)
-- CLI tool (`queen up`, `queen down`, etc.)
-- LoadFromDir (for compatibility with existing migrations)
-- MySQL driver
-- SQLite driver
-
-### v2.0 (Future)
-- Migration dependencies
-- Web UI
-- Metrics/observability
-- More database drivers
+Currently working on:
+- **SQLite driver** - In-process database support
+- **MySQL driver** - Broader database compatibility
 
 ## License
 

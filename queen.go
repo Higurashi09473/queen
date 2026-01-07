@@ -1,19 +1,22 @@
 // Package queen provides a database migration library for Go.
 //
-// Queen allows you to define migrations in code (not separate files),
-// supports both SQL and Go function migrations, and provides excellent
-// testing helpers for validating your migrations.
+// Philosophy: Queen follows the principle "migrations are code, not files".
+// This approach enables type safety, better IDE support, and easier testing
+// compared to traditional file-based migration tools.
+//
+// Queen supports both SQL and Go function migrations, provides excellent
+// testing helpers, and offers a clean API for managing database schema changes.
 //
 // Basic usage:
 //
-//	db, _ := sql.Open("postgres", "...")
+//	db, _ := sql.Open("pgx", "postgres://localhost/myapp?sslmode=disable")
 //	driver := postgres.New(db)
 //	q := queen.New(driver)
 //
-//	q.Add(queen.M{
+//	q.MustAdd(queen.M{
 //	    Version: "001",
 //	    Name:    "create_users",
-//	    UpSQL:   "CREATE TABLE users (id SERIAL PRIMARY KEY)",
+//	    UpSQL:   "CREATE TABLE users (id SERIAL PRIMARY KEY, email VARCHAR(255))",
 //	    DownSQL: "DROP TABLE users",
 //	})
 //
@@ -102,14 +105,13 @@ func (q *Queen) Add(m M) error {
 		return err
 	}
 
-	// Check for version conflict
 	for _, existing := range q.migrations {
 		if existing.Version == m.Version {
 			return fmt.Errorf("%w: %s", ErrVersionConflict, m.Version)
 		}
 	}
 
-	// Make a copy to avoid external modifications
+	// Store pointer to prevent mutation after registration
 	migration := m
 	q.migrations = append(q.migrations, &migration)
 
@@ -126,8 +128,9 @@ func (q *Queen) MustAdd(m M) {
 
 // Up applies all pending migrations in order.
 // It acquires a lock, loads applied migrations, and applies any pending ones.
+// Equivalent to UpSteps(ctx, 0).
 func (q *Queen) Up(ctx context.Context) error {
-	return q.UpSteps(ctx, 0) // 0 means "all"
+	return q.UpSteps(ctx, 0)
 }
 
 // UpSteps applies up to n pending migrations.
@@ -141,40 +144,34 @@ func (q *Queen) UpSteps(ctx context.Context, n int) error {
 		return ErrNoMigrations
 	}
 
-	// Initialize driver (creates tracking table if needed)
 	if err := q.driver.Init(ctx); err != nil {
 		return err
 	}
 
-	// Acquire lock
 	if !q.config.SkipLock {
 		if err := q.driver.Lock(ctx, q.config.LockTimeout); err != nil {
 			return err
 		}
 		defer func() {
-			// Use background context for unlock to ensure it completes even if ctx is cancelled
-			unlockCtx := context.Background()
-			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
+			// Unlock uses background context to complete even if parent context is cancelled.
+			// Unlock errors are non-critical and safely ignored.
+			_ = q.driver.Unlock(context.Background())
 		}()
 	}
 
-	// Load applied migrations
 	if err := q.loadApplied(ctx); err != nil {
 		return err
 	}
 
-	// Get pending migrations
 	pending := q.getPending()
 	if len(pending) == 0 {
-		return nil // Nothing to do
+		return nil
 	}
 
-	// Limit number of migrations if n > 0
 	if n > 0 && n < len(pending) {
 		pending = pending[:n]
 	}
 
-	// Apply pending migrations
 	for _, m := range pending {
 		if err := q.applyMigration(ctx, m); err != nil {
 			return newMigrationError(m.Version, m.Name, err)
@@ -195,43 +192,34 @@ func (q *Queen) Down(ctx context.Context, n int) error {
 		return ErrNoDriver
 	}
 
-	// Initialize driver
 	if err := q.driver.Init(ctx); err != nil {
 		return err
 	}
 
-	// Acquire lock
 	if !q.config.SkipLock {
 		if err := q.driver.Lock(ctx, q.config.LockTimeout); err != nil {
 			return err
 		}
 		defer func() {
-			// Use background context for unlock to ensure it completes even if ctx is cancelled
-			unlockCtx := context.Background()
-			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
+			_ = q.driver.Unlock(context.Background())
 		}()
 	}
 
-	// Load applied migrations
 	if err := q.loadApplied(ctx); err != nil {
 		return err
 	}
 
-	// Get applied migrations in reverse order
 	applied := q.getAppliedMigrations()
 	if len(applied) == 0 {
-		return nil // Nothing to rollback
+		return nil
 	}
 
-	// Limit number of migrations
 	if n > len(applied) {
 		n = len(applied)
 	}
 
-	// Reverse the list to rollback from newest to oldest
 	toRollback := applied[:n]
 
-	// Rollback migrations
 	for _, m := range toRollback {
 		if !m.HasRollback() {
 			return newMigrationError(m.Version, m.Name, fmt.Errorf("no down migration defined"))
@@ -251,35 +239,29 @@ func (q *Queen) Reset(ctx context.Context) error {
 		return ErrNoDriver
 	}
 
-	// Initialize driver
 	if err := q.driver.Init(ctx); err != nil {
 		return err
 	}
 
-	// Acquire lock
 	if !q.config.SkipLock {
 		if err := q.driver.Lock(ctx, q.config.LockTimeout); err != nil {
 			return err
 		}
 		defer func() {
-			// Use background context for unlock to ensure it completes even if ctx is cancelled
-			unlockCtx := context.Background()
-			_ = q.driver.Unlock(unlockCtx) // Explicitly ignore error on unlock
+			_ = q.driver.Unlock(context.Background())
 		}()
 	}
 
-	// Load applied migrations
 	if err := q.loadApplied(ctx); err != nil {
 		return err
 	}
 
-	// Get applied migrations in reverse order
 	applied := q.getAppliedMigrations()
 	if len(applied) == 0 {
-		return nil // Nothing to rollback
+		return nil
 	}
 
-	// Rollback all migrations (don't call Down to avoid double-locking)
+	// Don't call Down() to avoid double-locking
 	for _, m := range applied {
 		if !m.HasRollback() {
 			return newMigrationError(m.Version, m.Name, fmt.Errorf("no down migration defined"))
@@ -299,17 +281,14 @@ func (q *Queen) Status(ctx context.Context) ([]MigrationStatus, error) {
 		return nil, ErrNoDriver
 	}
 
-	// Initialize driver
 	if err := q.driver.Init(ctx); err != nil {
 		return nil, err
 	}
 
-	// Load applied migrations
 	if err := q.loadApplied(ctx); err != nil {
 		return nil, err
 	}
 
-	// Build status for each migration
 	statuses := make([]MigrationStatus, len(q.migrations))
 	for i, m := range q.migrations {
 		status := MigrationStatus{
@@ -347,7 +326,7 @@ func (q *Queen) Validate(ctx context.Context) error {
 		return ErrNoMigrations
 	}
 
-	// Check for duplicates (shouldn't happen if Add() is used correctly)
+	// Validate prevents race conditions when migrations are registered concurrently
 	seen := make(map[string]bool)
 	for _, m := range q.migrations {
 		if seen[m.Version] {
@@ -355,13 +334,11 @@ func (q *Queen) Validate(ctx context.Context) error {
 		}
 		seen[m.Version] = true
 
-		// Validate each migration
 		if err := m.Validate(); err != nil {
 			return fmt.Errorf("invalid migration %s: %w", m.Version, err)
 		}
 	}
 
-	// Check checksum mismatches if driver is available
 	if q.driver != nil {
 		if err := q.driver.Init(ctx); err != nil {
 			return err
