@@ -18,7 +18,7 @@ Queen is a database migration library that lets you define migrations in code, n
 - **Natural sorting** - Smart version ordering: "1" < "2" < "10" < "100", "user_1" < "user_10"
 - **Flexible versioning** - Use sequential numbers, prefixes, or any naming scheme
 - **Type-safe** - Full Go type safety for programmatic migrations
-- **PostgreSQL first** - Excellent Postgres support, more databases coming soon
+- **Multiple databases** - PostgreSQL, MySQL, SQLite support with extensible driver interface
 - **Lock protection** - Prevents concurrent migration runs
 - **Checksum validation** - Detects when applied migrations have changed
 
@@ -26,13 +26,33 @@ Queen is a database migration library that lets you define migrations in code, n
 
 ### Installation
 
+#### PostgreSQL
+
 ```bash
 go get github.com/honeynil/queen
 go get github.com/honeynil/queen/drivers/postgres
 go get github.com/jackc/pgx/v5/stdlib
 ```
 
+#### MySQL
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/mysql
+go get github.com/go-sql-driver/mysql
+```
+
+#### SQLite
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/sqlite
+go get github.com/mattn/go-sqlite3
+```
+
 ### Basic Usage
+
+#### PostgreSQL
 
 ```go
 package main
@@ -76,6 +96,120 @@ func main() {
         Version: "002",
         Name:    "add_users_name",
         UpSQL:   `ALTER TABLE users ADD COLUMN name VARCHAR(255)`,
+        DownSQL: `ALTER TABLE users DROP COLUMN name`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### MySQL
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/go-sql-driver/mysql"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/mysql"
+)
+
+func main() {
+    // Connect to MySQL (parseTime=true is required!)
+    db, _ := sql.Open("mysql", "user:password@tcp(localhost:3306)/myapp?parseTime=true")
+    defer db.Close()
+
+    // Create Queen instance
+    driver := mysql.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_name",
+        UpSQL:   `ALTER TABLE users ADD COLUMN name VARCHAR(255)`,
+        DownSQL: `ALTER TABLE users DROP COLUMN name`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### SQLite
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/mattn/go-sqlite3"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/sqlite"
+)
+
+func main() {
+    // Connect to SQLite (WAL mode recommended for better concurrency)
+    db, _ := sql.Open("sqlite3", "myapp.db?_journal_mode=WAL&_foreign_keys=on")
+    defer db.Close()
+
+    // Create Queen instance
+    driver := sqlite.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_name",
+        UpSQL:   `ALTER TABLE users ADD COLUMN name TEXT`,
         DownSQL: `ALTER TABLE users DROP COLUMN name`,
     })
 
@@ -296,11 +430,19 @@ func (q *Queen) Validate(ctx context.Context) error
 func (q *Queen) Close() error
 ```
 
-## What's Next
+## Supported Databases
 
-Currently working on:
-- **SQLite driver** - In-process database support
-- **MySQL driver** - Broader database compatibility
+| Database | Status | Version | Locking Mechanism |
+|----------|--------|---------|-------------------|
+| **PostgreSQL** | ✅ Ready | 9.6+ | Advisory locks |
+| **MySQL** | ✅ Ready | 5.7+ | Named locks (`GET_LOCK`) |
+| **MariaDB** | ✅ Ready | 10.2+ | Named locks (`GET_LOCK`) |
+| **SQLite** | ✅ Ready | 3.8+ | Exclusive transactions |
+| **CockroachDB** | 🔄 Planned | - | Advisory locks (PostgreSQL compatible) |
+| **ClickHouse** | 🔄 Planned | - | TBD |
+| **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
+
+See the [drivers](drivers/) directory for database-specific documentation and examples.
 
 ## License
 
