@@ -90,6 +90,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		)
 		ENGINE = ReplacingMergeTree()
 		ORDER BY lock_key
+		TTL expires_at + INTERVAL 10 SECOND DELETE
 	`, quoteIdentifier(d.lockTableName))
 
 	_, err := d.db.ExecContext(ctx, lockQuery)
@@ -224,7 +225,7 @@ func (d *Driver) Unlock(ctx context.Context) error {
 		return err
 	}
 	if !hasLock {
-		return fmt.Errorf("failed to release unlock: lock does not exist")
+		return nil
 	}
 
 	unlockQuery := fmt.Sprintf(`
