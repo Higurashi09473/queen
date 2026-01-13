@@ -61,7 +61,7 @@ func NewWithTableName(db *sql.DB, tableName string) *Driver {
 //   - checksum:    String            DEFAULT ” - hash of migration content for validation
 //
 // The lock table schema:
-//   - lock_key:    String            - lock identifier
+//   - lock_key:    LowCardinality(String) - lock identifier
 //   - acquired_at: DateTime64(3)     - when the lock was acquired
 //   - expires_at:  DateTime64(3)     - when the lock expires
 //
@@ -84,12 +84,13 @@ func (d *Driver) Init(ctx context.Context) error {
 
 	lockQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
-			lock_key    String,
-			acquired_at DateTime64(3) DEFAULT now64(3),
+			lock_key    LowCardinality(String),
+			acquired_at DateTime64(3)     DEFAULT now64(3),
 			expires_at  DateTime64(3)
 		)
 		ENGINE = ReplacingMergeTree()
 		ORDER BY lock_key
+		TTL expires_at + INTERVAL 10 SECOND DELETE
 	`, quoteIdentifier(d.lockTableName))
 
 	_, err := d.db.ExecContext(ctx, lockQuery)
@@ -158,8 +159,8 @@ func (d *Driver) Remove(ctx context.Context, version string) error {
 // processes/containers.
 //
 // The lock mechanism:
-// 1. Tries to insert a lock record with expiration time
-// 2. If insertion fails, checks if existing lock has expired
+// 1. Check for active locks
+// 2. If there are no active locks, tries to insert a lock record with expiration time
 // 3. Retries until timeout or lock is acquired
 //
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
@@ -169,21 +170,31 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 
+	selectQuery := fmt.Sprintf(`
+		SELECT 1 FROM %s WHERE lock_key = ? LIMIT 1
+	`, quoteIdentifier(d.lockTableName))
+
+	cleanupQuery := fmt.Sprintf(`
+		ALTER TABLE %s DELETE WHERE lock_key = ? AND expires_at < now64(3)
+	`, quoteIdentifier(d.lockTableName))
+
+	insertQuery := fmt.Sprintf(`
+		INSERT INTO %s (lock_key, expires_at)
+		VALUES (?, ?)
+	`, quoteIdentifier(d.lockTableName))
+
+	var hasLock bool
+
 	for {
 		// ClickHouse doesn't support INSERT ... ON CONFLICT, so we clean expired locks first
-		cleanupQuery := fmt.Sprintf(`
-			ALTER TABLE %s DELETE WHERE lock_key = ? AND expires_at < now64(3)
-		`, quoteIdentifier(d.lockTableName))
 		_, _ = d.db.ExecContext(ctx, cleanupQuery, d.lockKey)
 
-		insertQuery := fmt.Sprintf(`
-			INSERT INTO %s (lock_key, expires_at)
-			VALUES (?, ?)
-		`, quoteIdentifier(d.lockTableName))
-
-		_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
-		if err == nil {
-			return nil
+		_ = d.db.QueryRowContext(ctx, selectQuery, d.lockKey).Scan(&hasLock)
+		if !hasLock {
+			_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
+			if err == nil {
+				return nil
+			}
 		}
 
 		if time.Since(start) >= timeout {
@@ -204,11 +215,24 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // This removes the lock record from the lock table, allowing other processes
 // to acquire the lock.
 func (d *Driver) Unlock(ctx context.Context) error {
-	query := fmt.Sprintf(`
+	selectQuery := fmt.Sprintf(`
+		SELECT 1 FROM %s WHERE lock_key = ? LIMIT 1
+	`, quoteIdentifier(d.lockTableName))
+
+	var hasLock bool
+	err := d.db.QueryRowContext(ctx, selectQuery, d.lockKey).Scan(&hasLock)
+	if err != nil {
+		return err
+	}
+	if !hasLock {
+		return nil
+	}
+
+	unlockQuery := fmt.Sprintf(`
 		ALTER TABLE %s DELETE WHERE lock_key = ?
 	`, quoteIdentifier(d.lockTableName))
 
-	_, err := d.db.ExecContext(ctx, query, d.lockKey)
+	_, err = d.db.ExecContext(ctx, unlockQuery, d.lockKey)
 	return err
 }
 
