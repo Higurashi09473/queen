@@ -111,6 +111,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	cleanup := func() {
 		// Drop all test tables
 		_, _ = db.Exec("DROP TABLE IF EXISTS queen_migrations")
+		_, _ = db.Exec("DROP TABLE IF EXISTS queen_migrations_lock")
 		_, _ = db.Exec("DROP TABLE IF EXISTS test_users")
 		_, _ = db.Exec("DROP TABLE IF EXISTS test_posts")
 		db.Close()
@@ -492,6 +493,10 @@ func TestUnlock_WhenNotLocked(t *testing.T) {
 	driver := New(db)
 	ctx := context.Background()
 
+	if err := driver.Init(ctx); err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
+
 	// Try to unlock when not locked
 	err := driver.Unlock(ctx)
 	if err == nil {
@@ -504,6 +509,10 @@ func TestLock_ContextCancellation(t *testing.T) {
 	defer cleanup()
 
 	driver := New(db)
+
+	if err := driver.Init(context.Background()); err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
 
 	// Acquire lock
 	if err := driver.Lock(context.Background(), 5*time.Second); err != nil {
