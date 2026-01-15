@@ -64,6 +64,11 @@ func NewWithTableName(db *sql.DB, tableName string) *Driver {
 //   - lock_key:    LowCardinality(String) - lock identifier
 //   - acquired_at: DateTime64(3)     - when the lock was acquired
 //   - expires_at:  DateTime64(3)     - when the lock expires
+//   - TTL: expires_at + 10 SECOND    - automatically removes expired locks
+//
+// The TTL (Time To Live) on the lock table provides automatic cleanup of expired
+// locks as a safety mechanism. This prevents abandoned locks from blocking migrations
+// indefinitely if a process crashes without releasing the lock.
 //
 // This method is idempotent and safe to call multiple times.
 func (d *Driver) Init(ctx context.Context) error {
@@ -159,50 +164,80 @@ func (d *Driver) Remove(ctx context.Context, version string) error {
 // processes/containers.
 //
 // The lock mechanism:
-// 1. Check for active locks
-// 2. If there are no active locks, tries to insert a lock record with expiration time
-// 3. Retries until timeout or lock is acquired
+// 1. Cleans up expired locks using ALTER TABLE DELETE (async in ClickHouse)
+// 2. Checks if an active lock exists using SELECT with FINAL
+// 3. If no lock exists, attempts INSERT
+// 4. Retries with exponential backoff until timeout or lock is acquired
+//
+// IMPORTANT: Uses FINAL modifier with ReplacingMergeTree to ensure we see
+// deduplicated data, not intermediate merge states. This is critical because
+// ClickHouse operations are asynchronous by nature.
+//
+// Exponential backoff starts at 50ms and doubles up to 1s maximum to reduce
+// database load during lock contention.
 //
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	start := time.Now()
 	expiresAt := time.Now().Add(timeout)
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
 
-	selectQuery := fmt.Sprintf(`
-		SELECT 1 FROM %s WHERE lock_key = ? LIMIT 1
-	`, quoteIdentifier(d.lockTableName))
+	// Exponential backoff: start at 50ms, max 1s
+	backoff := 50 * time.Millisecond
+	maxBackoff := 1 * time.Second
 
+	// Clean up expired locks (async operation in ClickHouse)
 	cleanupQuery := fmt.Sprintf(`
 		ALTER TABLE %s DELETE WHERE lock_key = ? AND expires_at < now64(3)
 	`, quoteIdentifier(d.lockTableName))
 
-	insertQuery := fmt.Sprintf(`
-		INSERT INTO %s (lock_key, expires_at)
-		VALUES (?, ?)
+	// Check if active lock exists - CRITICAL: use FINAL for ReplacingMergeTree
+	// FINAL ensures we see deduplicated data, accounting for async merges
+	checkQuery := fmt.Sprintf(`
+		SELECT count(*) FROM %s FINAL
+		WHERE lock_key = ? AND expires_at >= now64(3)
 	`, quoteIdentifier(d.lockTableName))
 
-	var hasLock bool
+	// Simple insert query
+	insertQuery := fmt.Sprintf(`
+		INSERT INTO %s (lock_key, expires_at) VALUES (?, ?)
+	`, quoteIdentifier(d.lockTableName))
 
 	for {
-		// ClickHouse doesn't support INSERT ... ON CONFLICT, so we clean expired locks first
+		// Clean expired locks first (best effort, ignore errors)
+		// Note: This is async, but TTL will eventually clean up
 		_, _ = d.db.ExecContext(ctx, cleanupQuery, d.lockKey)
 
-		_ = d.db.QueryRowContext(ctx, selectQuery, d.lockKey).Scan(&hasLock)
-		if !hasLock {
-			_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
-			if err == nil {
-				return nil
-			}
+		// Check if an active lock exists using FINAL to see deduplicated state
+		var count int64
+		err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&count)
+		if err != nil && err != sql.ErrNoRows {
+			// Database error, wait and retry
+			goto retry
 		}
 
+		// If no active lock exists, try to insert
+		if count == 0 {
+			_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
+			if err == nil {
+				return nil // Lock acquired successfully
+			}
+			// Insert failed (possible race condition), retry with backoff
+		}
+
+	retry:
+		// Check timeout
 		if time.Since(start) >= timeout {
 			return queen.ErrLockTimeout
 		}
 
+		// Wait with exponential backoff
 		select {
-		case <-tick.C:
+		case <-time.After(backoff):
+			// Double the backoff for next iteration, up to maxBackoff
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 			continue
 		case <-ctx.Done():
 			return ctx.Err()
@@ -214,36 +249,43 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 //
 // This removes the lock record from the lock table, allowing other processes
 // to acquire the lock.
+//
+// This method is graceful: it returns nil if the lock doesn't exist or was
+// already released. This prevents errors during cleanup when locks expire
+// via TTL or in error recovery scenarios.
 func (d *Driver) Unlock(ctx context.Context) error {
-	selectQuery := fmt.Sprintf(`
-		SELECT 1 FROM %s WHERE lock_key = ? LIMIT 1
-	`, quoteIdentifier(d.lockTableName))
-
-	var hasLock bool
-	err := d.db.QueryRowContext(ctx, selectQuery, d.lockKey).Scan(&hasLock)
-	if err != nil {
-		return err
-	}
-	if !hasLock {
-		return nil
-	}
-
 	unlockQuery := fmt.Sprintf(`
 		ALTER TABLE %s DELETE WHERE lock_key = ?
 	`, quoteIdentifier(d.lockTableName))
 
-	_, err = d.db.ExecContext(ctx, unlockQuery, d.lockKey)
+	// Execute DELETE - it's safe even if lock doesn't exist
+	// We intentionally don't check if the lock exists first to avoid race conditions
+	_, err := d.db.ExecContext(ctx, unlockQuery, d.lockKey)
+
+	// Gracefully ignore "no rows" scenarios - the lock might have expired via TTL
+	// or been released by another cleanup process
 	return err
 }
 
 // Exec executes a function within a transaction.
 //
-// Note: ClickHouse has limited transaction support compared to traditional RDBMS.
-// Transactions work only for tables with MergeTree engine family and provide
-// atomicity guarantees for the current session.
+// IMPORTANT: ClickHouse transaction support is LIMITED and EXPERIMENTAL.
+//
+// Transaction limitations in ClickHouse:
+//   - Only works for MergeTree engine family tables (e.g., MergeTree, ReplacingMergeTree)
+//   - Requires experimental feature flag: allow_experimental_transactions=1
+//   - Provides atomicity only for the current session, not full ACID guarantees
+//   - Cross-table atomicity is limited
+//   - Not suitable for high-concurrency OLTP workloads
+//
+// Despite these limitations, transactions are used here to provide best-effort
+// atomicity for migration execution. Most migration DDL operations (CREATE TABLE,
+// ALTER TABLE) are atomic by nature in ClickHouse.
 //
 // If the function returns an error, the transaction is rolled back.
 // Otherwise, the transaction is committed.
+//
+// See: https://clickhouse.com/docs/en/guides/developer/transactional
 func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
