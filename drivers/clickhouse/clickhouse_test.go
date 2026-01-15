@@ -497,10 +497,10 @@ func TestUnlock_WhenNotLocked(t *testing.T) {
 		t.Fatalf("Init() failed: %v", err)
 	}
 
-	// Try to unlock when not locked
+	// Try to unlock when not locked - should be graceful and not return error
 	err := driver.Unlock(ctx)
-	if err == nil {
-		t.Error("expected error when unlocking without lock, got nil")
+	if err != nil {
+		t.Errorf("expected nil when unlocking without lock (graceful), got: %v", err)
 	}
 }
 
