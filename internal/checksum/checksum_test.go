@@ -68,3 +68,41 @@ func TestCalculateDifferent(t *testing.T) {
 		t.Errorf("Calculate() produced same hash for different inputs")
 	}
 }
+
+func TestCalculate_WhitespaceNormalization(t *testing.T) {
+	// same checksum
+	sql1 := "CREATE TABLE users (id INT);"
+	sql2 := "  CREATE TABLE users (id INT);  "
+	sql3 := `
+    CREATE TABLE users (id INT);
+  `
+	sql4 := "\t\tCREATE TABLE users (id INT);\n\n"
+
+	checksum1 := Calculate(sql1)
+	checksum2 := Calculate(sql2)
+	checksum3 := Calculate(sql3)
+	checksum4 := Calculate(sql4)
+
+	if checksum1 != checksum2 {
+		t.Errorf("checksum1 != checksum2: %s != %s", checksum1, checksum2)
+	}
+	if checksum1 != checksum3 {
+		t.Errorf("checksum1 != checksum3: %s != %s", checksum1, checksum3)
+	}
+	if checksum1 != checksum4 {
+		t.Errorf("checksum1 != checksum4: %s != %s", checksum1, checksum4)
+	}
+}
+
+func TestCalculate_DifferentContent(t *testing.T) {
+	// dif checksum
+	sql1 := "CREATE TABLE users (id INT);"
+	sql2 := "CREATE TABLE posts (id INT);"
+
+	checksum1 := Calculate(sql1)
+	checksum2 := Calculate(sql2)
+
+	if checksum1 == checksum2 {
+		t.Errorf("different SQL should have different checksum")
+	}
+}
