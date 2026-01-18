@@ -14,7 +14,7 @@ import (
 // createDriver creates the appropriate driver based on the driver name.
 func (app *App) createDriver(db *sql.DB) (queen.Driver, error) {
 	switch app.config.Driver {
-	case "postgres", "postgresql", "pgx":
+	case DriverPostgres, DriverPostgreSQL, "pgx":
 		return postgres.New(db), nil
 
 	case "mysql":

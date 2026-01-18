@@ -79,7 +79,7 @@ func (app *App) loadConfigFile() error {
 		if app.config.DSN == "" {
 			app.config.DSN = env.DSN
 		}
-		if app.config.Table == "queen_migrations" && env.Table != "" {
+		if app.config.Table == DefaultTableName && env.Table != "" {
 			app.config.Table = env.Table
 		}
 		if app.config.LockTimeout == 0 && env.LockTimeout > 0 {
