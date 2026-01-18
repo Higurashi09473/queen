@@ -8,9 +8,11 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-
+	"github.com/honeynil/queen/cli"
 	"github.com/honeynil/queen"
 )
+
+const CockroachTestDSN = "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
 
 // TestQuoteIdentifier tests the identifier quoting function.
 func TestQuoteIdentifier(t *testing.T) {
@@ -65,7 +67,7 @@ func TestDriverCreation(t *testing.T) {
 		if driver.db != db {
 			t.Error("driver.db should be set")
 		}
-		if driver.tableName != "queen_migrations" {
+		if driver.tableName != cli.DefaultTableName {
 			t.Errorf("driver.tableName = %q; want %q", driver.tableName, "queen_migrations")
 		}
 	})
@@ -90,7 +92,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	dsn := os.Getenv("COCKROACHDB_TEST_DSN")
 	if dsn == "" {
 		// Default DSN for local testing
-		dsn = "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
+		dsn = CockroachTestDSN
 	}
 
 	db, err := sql.Open("pgx", dsn)
@@ -140,7 +142,7 @@ func TestInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrations table was not created: %v", err)
 	}
-	if tableName != "queen_migrations" {
+	if tableName != cli.DefaultTableName {
 		t.Errorf("table name = %q; want %q", tableName, "queen_migrations")
 	}
 
