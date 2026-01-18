@@ -23,6 +23,7 @@ Queen is a database migration library that lets you define migrations in code, n
 - **Multiple databases** - PostgreSQL, MySQL, SQLite support with extensible driver interface
 - **Lock protection** - Prevents concurrent migration runs
 - **Checksum validation** - Detects when applied migrations have changed
+- **CLI tool** - Built-in command-line interface for migration management
 
 ## Quick Start
 
@@ -50,6 +51,14 @@ go get github.com/go-sql-driver/mysql
 go get github.com/honeynil/queen
 go get github.com/honeynil/queen/drivers/sqlite
 go get github.com/mattn/go-sqlite3
+```
+
+#### ClickHouse
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/clickhouse
+go get github.com/ClickHouse/clickhouse-go/v2
 ```
 
 ### Basic Usage
@@ -440,11 +449,52 @@ func (q *Queen) Close() error
 | **MySQL** | ✅ Ready | 5.7+ | Named locks (`GET_LOCK`) |
 | **MariaDB** | ✅ Ready | 10.2+ | Named locks (`GET_LOCK`) |
 | **SQLite** | ✅ Ready | 3.8+ | Exclusive transactions |
+| **ClickHouse** | ✅ Ready | Latest | Table + TTL |
 | **CockroachDB** | 🔄 Planned | - | Advisory locks (PostgreSQL compatible) |
-| **ClickHouse** | 🔄 Planned | - | TBD |
+| **MongoDB** | 🔄 Planned | - | TBD |
 | **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
 
 See the [drivers](drivers/) directory for database-specific documentation and examples.
+
+## CLI
+
+Queen includes a command-line interface for managing migrations. Create your own binary that imports your migrations:
+
+```go
+// cmd/migrate/main.go
+package main
+
+import (
+    _ "github.com/jackc/pgx/v5/stdlib"
+
+    "github.com/honeynil/queen/cli"
+    "myapp/migrations"
+)
+
+func main() {
+    cli.Run(migrations.Register)
+}
+```
+
+Then use it:
+
+```bash
+# Build
+go build -o migrate cmd/migrate/main.go
+
+# Configure
+export QUEEN_DRIVER=postgres
+export QUEEN_DSN="postgres://localhost/myapp?sslmode=disable"
+
+# Use
+./migrate up              # Apply all pending migrations
+./migrate down            # Rollback last migration
+./migrate status          # Show migration status
+./migrate create add_foo  # Create new migration
+./migrate validate        # Validate checksums
+```
+
+See [CLI documentation](docs/CLI.md) for full details on commands, flags, and configuration.
 
 ## License
 
