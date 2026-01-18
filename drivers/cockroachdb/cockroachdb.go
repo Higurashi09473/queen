@@ -293,18 +293,10 @@ func (d *Driver) Close() error {
 	return d.db.Close()
 }
 
-// quoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
+// QuoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
 // In CockroachDB, identifiers are quoted with double quotes.
-func quoteIdentifier(name string) string {
+func QuoteIdentifier(name string) string {
 	// Replace any existing double quotes with two double quotes (escaping)
 	// and wrap the identifier in double quotes
-	escaped := ""
-	for _, c := range name {
-		if c == '"' {
-			escaped += "\"\""
-		} else {
-			escaped += string(c)
-		}
-	}
-	return `"` + escaped + `"`
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
