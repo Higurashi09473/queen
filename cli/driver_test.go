@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -69,11 +70,14 @@ func TestCreateDriver(t *testing.T) {
 				// For valid drivers with nil DB, we expect either success or a panic
 				// (since drivers try to use the nil DB)
 				// This is acceptable for unit tests - integration tests would use real DBs
-				if err != nil && !contains(err.Error(), "unsupported") {
-					// Only fail if it's an "unsupported driver" error
-					// Other errors (like nil pointer) are expected with nil DB
+				if err != nil {
+					if strings.Contains(err.Error(), "unsupported") {
+						return
+					}
+					t.Errorf("unexpected error for driver %q: %v", tt.driver, err)
 				}
 			}
+
 		})
 	}
 }

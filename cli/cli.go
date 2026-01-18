@@ -40,6 +40,25 @@ type RegisterFunc func(*queen.Queen)
 // It receives the DSN (data source name) and returns a *sql.DB.
 type DBOpener func(dsn string) (*sql.DB, error)
 
+// Driver name constants.
+const (
+	DriverPostgres   = "postgres"
+	DriverPostgreSQL = "postgresql"
+	DriverMySQL      = "mysql"
+	DriverSQLite     = "sqlite"
+	DriverSQLite3    = "sqlite3"
+	DriverClickHouse = "clickhouse"
+
+	// SQL driver names
+	SQLDriverPostgres   = "pgx"
+	SQLDriverMySQL      = "mysql"
+	SQLDriverSQLite     = "sqlite3"
+	SQLDriverClickHouse = "clickhouse"
+)
+
+// Default table name for migrations.
+const DefaultTableName = "queen_migrations"
+
 // App holds the CLI application state.
 type App struct {
 	registerFunc RegisterFunc
@@ -110,7 +129,7 @@ Examples:
 func (app *App) addGlobalFlags() {
 	flags := app.rootCmd.PersistentFlags()
 
-	flags.StringVar(&app.config.Driver, "driver", "", "Database driver (postgres, mysql, sqlite, clickhouse)")
+	flags.StringVar(&app.config.Driver, "driver", "", fmt.Sprintf("Database driver (%s, %s, %s, %s)", DriverPostgres, DriverMySQL, DriverSQLite, DriverClickHouse))
 	flags.StringVar(&app.config.DSN, "dsn", "", "Database connection string")
 	flags.StringVar(&app.config.Table, "table", "queen_migrations", "Migration table name")
 	flags.DurationVar(&app.config.LockTimeout, "timeout", 0, "Lock timeout (e.g. 30m, 1h)")
@@ -162,13 +181,13 @@ func (app *App) setupQueen(ctx context.Context) (*queen.Queen, error) {
 	}
 
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	driver, err := app.createDriver(db)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -187,14 +206,14 @@ func (app *App) setupQueen(ctx context.Context) (*queen.Queen, error) {
 
 func getSQLDriverName(driverName string) string {
 	switch driverName {
-	case "postgres", "postgresql":
-		return "pgx"
-	case "mysql":
-		return "mysql"
-	case "sqlite", "sqlite3":
-		return "sqlite3"
-	case "clickhouse":
-		return "clickhouse"
+	case DriverPostgres, DriverPostgreSQL:
+		return SQLDriverPostgres
+	case DriverMySQL:
+		return SQLDriverMySQL
+	case DriverSQLite, DriverSQLite3:
+		return SQLDriverSQLite
+	case DriverClickHouse:
+		return SQLDriverClickHouse
 	default:
 		return driverName
 	}

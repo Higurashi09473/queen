@@ -33,12 +33,12 @@ type ConfigFile struct {
 
 // Environment represents a single environment configuration.
 type Environment struct {
-	Driver                 string        `yaml:"driver"`
-	DSN                    string        `yaml:"dsn"`
-	Table                  string        `yaml:"table"`
-	LockTimeout            time.Duration `yaml:"lock_timeout"`
-	RequireConfirmation    bool          `yaml:"require_confirmation"`
-	RequireExplicitUnlock  bool          `yaml:"require_explicit_unlock"`
+	Driver                string        `yaml:"driver"`
+	DSN                   string        `yaml:"dsn"`
+	Table                 string        `yaml:"table"`
+	LockTimeout           time.Duration `yaml:"lock_timeout"`
+	RequireConfirmation   bool          `yaml:"require_confirmation"`
+	RequireExplicitUnlock bool          `yaml:"require_explicit_unlock"`
 }
 
 func (app *App) loadConfigFile() error {

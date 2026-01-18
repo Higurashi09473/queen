@@ -39,7 +39,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			if steps > 0 {
 				if err := q.UpSteps(ctx, steps); err != nil {

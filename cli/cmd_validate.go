@@ -30,7 +30,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			if err := q.Validate(ctx); err != nil {
 				return fmt.Errorf("validation failed: %w", err)

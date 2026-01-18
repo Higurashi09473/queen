@@ -1,34 +1,39 @@
+version: "2"
 linters:
   enable:
-    - gofmt
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
     - copyloopvar
+    - goconst
     - gocyclo
     - misspell
-    - unparam
     - unconvert
-    - goconst
-    - goimports
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-
+    - unparam
+  settings:
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocyclo:
+      min-complexity: 15
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - errcheck
+          - goconst
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - goconst
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

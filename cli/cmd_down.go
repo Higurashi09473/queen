@@ -40,7 +40,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			if err := q.Down(ctx, steps); err != nil {
 				return fmt.Errorf("failed to rollback migrations: %w", err)

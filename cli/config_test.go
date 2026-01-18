@@ -3,132 +3,88 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestLoadConfigFile(t *testing.T) {
-	// Create a temporary directory for test config files
+func testLoadConfigFile(t *testing.T, name, configYAML, env string, wantErr bool, errContains, wantDriver, wantDSN, wantTable string) {
 	tempDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWd)
 
-	tests := []struct {
-		name        string
-		configYAML  string
-		env         string
-		wantErr     bool
-		errContains string
-		wantDriver  string
-		wantDSN     string
-		wantTable   string
-	}{
-		{
-			name: "locked config",
-			configYAML: `config_locked: true
+	testDir := filepath.Join(tempDir, name)
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(testDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(".queen.yaml", []byte(configYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{
+		config: &Config{
+			UseConfig: true,
+			Env:       env,
+			Table:     "queen_migrations",
+		},
+	}
+
+	if err := app.loadConfigFile(); err != nil {
+		if wantErr && (errContains == "" || strings.Contains(err.Error(), errContains)) {
+			return
+		}
+		t.Fatalf("loadConfigFile error mismatch: got %v, want contains %q", err, errContains)
+	}
+
+	// Simple field checks
+	if wantDriver != "" && app.config.Driver != wantDriver {
+		t.Errorf("driver = %q, want %q", app.config.Driver, wantDriver)
+	}
+	if wantDSN != "" && app.config.DSN != wantDSN {
+		t.Errorf("dsn = %q, want %q", app.config.DSN, wantDSN)
+	}
+	if wantTable != "" && app.config.Table != wantTable {
+		t.Errorf("table = %q, want %q", app.config.Table, wantTable)
+	}
+}
+
+func TestLoadConfigFile(t *testing.T) {
+	testLoadConfigFile(t, "locked config",
+		`config_locked: true
 development:
   driver: postgres
   dsn: postgres://localhost/dev
-`,
-			wantErr:     true,
-			errContains: "config file is locked",
-		},
-		{
-			name: "unlocked config with environment",
-			configYAML: `config_locked: false
+`, "", true, "config file is locked", "", "", "")
+
+	testLoadConfigFile(t, "unlocked config with environment",
+		`config_locked: false
 development:
   driver: postgres
   dsn: postgres://localhost/dev
   table: custom_migrations
-`,
-			env:        "development",
-			wantDriver: "postgres",
-			wantDSN:    "postgres://localhost/dev",
-			wantTable:  "custom_migrations",
-		},
-		{
-			name: "missing environment",
-			configYAML: `config_locked: false
+`, "development", false, "", "postgres", "postgres://localhost/dev", "custom_migrations")
+
+	testLoadConfigFile(t, "missing environment",
+		`config_locked: false
 development:
   driver: postgres
   dsn: postgres://localhost/dev
-`,
-			env:         "production",
-			wantErr:     true,
-			errContains: "environment 'production' not found",
-		},
-		{
-			name: "environment requires unlock",
-			configYAML: `config_locked: false
+`, "production", true, "environment 'production' not found", "", "", "")
+
+	testLoadConfigFile(t, "environment requires unlock",
+		`config_locked: false
 production:
   driver: postgres
   dsn: postgres://localhost/prod
   require_explicit_unlock: true
-`,
-			env:         "production",
-			wantErr:     true,
-			errContains: "requires --unlock-production",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Change to temp directory
-			oldWd, err := os.Getwd()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer os.Chdir(oldWd)
-
-			testDir := filepath.Join(tempDir, tt.name)
-			if err := os.MkdirAll(testDir, 0755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chdir(testDir); err != nil {
-				t.Fatal(err)
-			}
-
-			// Write config file
-			if err := os.WriteFile(".queen.yaml", []byte(tt.configYAML), 0644); err != nil {
-				t.Fatal(err)
-			}
-
-			// Create app with config
-			app := &App{
-				config: &Config{
-					UseConfig: true,
-					Env:       tt.env,
-					Table:     "queen_migrations", // default
-				},
-			}
-
-			err = app.loadConfigFile()
-
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error containing %q, got nil", tt.errContains)
-					return
-				}
-				if tt.errContains != "" && !contains(err.Error(), tt.errContains) {
-					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-
-			if tt.wantDriver != "" && app.config.Driver != tt.wantDriver {
-				t.Errorf("driver = %q, want %q", app.config.Driver, tt.wantDriver)
-			}
-			if tt.wantDSN != "" && app.config.DSN != tt.wantDSN {
-				t.Errorf("dsn = %q, want %q", app.config.DSN, tt.wantDSN)
-			}
-			if tt.wantTable != "" && app.config.Table != tt.wantTable {
-				t.Errorf("table = %q, want %q", app.config.Table, tt.wantTable)
-			}
-		})
-	}
+`, "production", true, "requires --unlock-production", "", "", "")
 }
 
 func TestLoadEnv(t *testing.T) {
@@ -172,9 +128,9 @@ func TestLoadEnv(t *testing.T) {
 
 		app := &App{
 			config: &Config{
-				Driver: "mysql",                     // set by flag
-				DSN:    "mysql://localhost/test",    // set by flag
-				Table:  "queen_migrations",          // default
+				Driver: "mysql",                  // set by flag
+				DSN:    "mysql://localhost/test", // set by flag
+				Table:  "queen_migrations",       // default
 			},
 		}
 

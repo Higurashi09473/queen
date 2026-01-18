@@ -26,7 +26,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			statuses, err := q.Status(ctx)
 			if err != nil {

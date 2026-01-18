@@ -35,10 +35,8 @@ func TestIsValidMigrationName(t *testing.T) {
 	}
 }
 
-func TestFindNextVersion(t *testing.T) {
+func testFindNextVersion(t *testing.T, setupFiles []string, expectedVersion string) {
 	tempDir := t.TempDir()
-
-	// Change to temp directory
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -49,109 +47,60 @@ func TestFindNextVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if len(setupFiles) > 0 {
+		if err := os.MkdirAll("migrations", 0755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll("migrations")
+
+		for _, f := range setupFiles {
+			if err := os.WriteFile(filepath.Join("migrations", f), []byte("package migrations"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	version, err := findNextVersion()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if version != expectedVersion {
+		t.Errorf("findNextVersion() = %q, want %q", version, expectedVersion)
+	}
+}
+
+func TestFindNextVersion(t *testing.T) {
 	t.Run("no migrations directory", func(t *testing.T) {
-		version, err := findNextVersion()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if version != "001" {
-			t.Errorf("findNextVersion() = %q, want %q", version, "001")
-		}
+		testFindNextVersion(t, nil, "001")
 	})
 
 	t.Run("empty migrations directory", func(t *testing.T) {
-		if err := os.MkdirAll("migrations", 0755); err != nil {
-			t.Fatal(err)
-		}
-		defer os.RemoveAll("migrations")
-
-		version, err := findNextVersion()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if version != "001" {
-			t.Errorf("findNextVersion() = %q, want %q", version, "001")
-		}
+		testFindNextVersion(t, []string{}, "001")
 	})
 
 	t.Run("with existing migrations", func(t *testing.T) {
-		if err := os.MkdirAll("migrations", 0755); err != nil {
-			t.Fatal(err)
-		}
-		defer os.RemoveAll("migrations")
-
-		// Create some migration files
-		files := []string{
+		testFindNextVersion(t, []string{
 			"001_create_users.go",
 			"002_add_email.go",
-			"005_add_index.go", // gap in versions
-		}
-		for _, f := range files {
-			if err := os.WriteFile(filepath.Join("migrations", f), []byte("package migrations"), 0644); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		version, err := findNextVersion()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if version != "006" {
-			t.Errorf("findNextVersion() = %q, want %q", version, "006")
-		}
+			"005_add_index.go",
+		}, "006")
 	})
 
 	t.Run("ignores non-go files", func(t *testing.T) {
-		if err := os.MkdirAll("migrations", 0755); err != nil {
-			t.Fatal(err)
-		}
-		defer os.RemoveAll("migrations")
-
-		files := []string{
+		testFindNextVersion(t, []string{
 			"001_create_users.go",
 			"002_readme.md",
 			"003_notes.txt",
-		}
-		for _, f := range files {
-			if err := os.WriteFile(filepath.Join("migrations", f), []byte("content"), 0644); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		version, err := findNextVersion()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if version != "002" {
-			t.Errorf("findNextVersion() = %q, want %q", version, "002")
-		}
+		}, "002")
 	})
 
 	t.Run("handles malformed filenames", func(t *testing.T) {
-		if err := os.MkdirAll("migrations", 0755); err != nil {
-			t.Fatal(err)
-		}
-		defer os.RemoveAll("migrations")
-
-		files := []string{
+		testFindNextVersion(t, []string{
 			"001_create_users.go",
-			"register.go",         // no version prefix
-			"utils.go",            // no version prefix
-			"abc_migration.go",    // non-numeric version
-		}
-		for _, f := range files {
-			if err := os.WriteFile(filepath.Join("migrations", f), []byte("package migrations"), 0644); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		version, err := findNextVersion()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if version != "002" {
-			t.Errorf("findNextVersion() = %q, want %q", version, "002")
-		}
+			"register.go",
+			"utils.go",
+			"abc_migration.go",
+		}, "002")
 	})
 }
 

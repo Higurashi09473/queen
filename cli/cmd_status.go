@@ -37,7 +37,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			statuses, err := q.Status(ctx)
 			if err != nil {
@@ -84,25 +84,29 @@ func (app *App) outputStatusTable(statuses []queen.MigrationStatus) error {
 			checksum = checksum[:12] + "..."
 		}
 
-		table.Append([]string{
+		if err := table.Append([]string{
 			s.Version,
 			s.Name,
 			status,
 			appliedAt,
 			checksum,
 			rollback,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
-	table.Render()
+	if err := table.Render(); err != nil {
+		return err
+	}
 
 	fmt.Printf("\nSummary: %d total, %d applied, %d pending", len(statuses), applied, pending)
 	if modified > 0 {
 		fmt.Printf(", %d modified (⚠️  WARNING)", modified)
 	}
 	fmt.Println()
-
 	return nil
+
 }
 
 func (app *App) outputStatusJSON(statuses []queen.MigrationStatus) error {

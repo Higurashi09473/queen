@@ -37,7 +37,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			defer q.Close()
+			defer func() { _ = q.Close() }()
 
 			if err := q.Reset(ctx); err != nil {
 				return fmt.Errorf("failed to reset migrations: %w", err)
