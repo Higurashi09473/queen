@@ -196,15 +196,15 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 		_, _ = d.db.ExecContext(ctx, cleanupQuery, d.lockKey)
 
 		// Check if an active lock exists
-		var count int64
-		err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&count)
+		var hasLock bool
+		err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
 		if err != nil && err != sql.ErrNoRows {
 			// Database error, wait and retry
 			goto retry
 		}
 
 		// If no active lock exists, try to insert
-		if count == 0 {
+		if !hasLock {
 			_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
 			if err == nil {
 				return nil // Lock acquired successfully
@@ -237,13 +237,28 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // This method is graceful: it returns nil if the lock doesn't exist or was
 // already released.
 func (d *Driver) Unlock(ctx context.Context) error {
+	checkQuery := fmt.Sprintf(`
+		SELECT 1 FROM %s
+		WHERE lock_key = $1 AND expires_at >= now()
+		LIMIT 1
+	`, quoteIdentifier(d.lockTableName))
+
 	unlockQuery := fmt.Sprintf(`
 		DELETE FROM %s WHERE lock_key = $1
 	`, quoteIdentifier(d.lockTableName))
 
+	var hasLock bool
+	err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if !hasLock{
+		return nil
+	}
+
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
-	_, err := d.db.ExecContext(ctx, unlockQuery, d.lockKey)
+	_, err = d.db.ExecContext(ctx, unlockQuery, d.lockKey)
 
 	// Gracefully ignore "no rows" scenarios - the lock may have been released by
 	// another cleanup process.
