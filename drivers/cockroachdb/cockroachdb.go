@@ -76,7 +76,7 @@ func (d *Driver) Init(ctx context.Context) error {
 			applied_at  TIMESTAMP	 DEFAULT CURRENT_TIMESTAMP,
 			checksum	VARCHAR(64)  NOT NULL
 		)
-	`, quoteIdentifier(d.tableName))
+	`, QuoteIdentifier(d.tableName))
 
 	if _, err := d.db.ExecContext(ctx, migrationsQuery); err != nil {
 		return err
@@ -88,7 +88,7 @@ func (d *Driver) Init(ctx context.Context) error {
 			acquired_at	TIMESTAMP		DEFAULT CURRENT_TIMESTAMP,
 			expires_at	TIMESTAMP		NOT NULL
 		)
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	_, err := d.db.ExecContext(ctx, lockQuery)
 	return err
@@ -103,7 +103,7 @@ func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
 		SELECT version, name, applied_at, checksum
 		FROM %s
 		ORDER BY applied_at ASC
-	`, quoteIdentifier(d.tableName))
+	`, QuoteIdentifier(d.tableName))
 
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
@@ -131,7 +131,7 @@ func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
 	query := fmt.Sprintf(`
 		INSERT INTO %s (version, name, checksum)
 		VALUES ($1, $2, $3)
-	`, quoteIdentifier(d.tableName))
+	`, QuoteIdentifier(d.tableName))
 
 	_, err := d.db.ExecContext(ctx, query, m.Version, m.Name, m.Checksum())
 	return err
@@ -143,7 +143,7 @@ func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
 func (d *Driver) Remove(ctx context.Context, version string) error {
 	query := fmt.Sprintf(`
 		DELETE FROM %s WHERE version = $1
-	`, quoteIdentifier(d.tableName))
+	`, QuoteIdentifier(d.tableName))
 
 	_, err := d.db.ExecContext(ctx, query, version)
 	return err
@@ -177,19 +177,19 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	cleanupQuery := fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE lock_key = $1 AND expires_at <= now()
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	// Check if active lock exists
 	checkQuery := fmt.Sprintf(`
 		SELECT 1 FROM %s
 		WHERE lock_key = $1 AND expires_at >= now()
 		LIMIT 1
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	// Simple insert query
 	insertQuery := fmt.Sprintf(`
 		INSERT INTO %s (lock_key, expires_at) VALUES ($1, $2)
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	for {
 		// Clean expired locks first (best effort, ignore errors)
@@ -241,11 +241,11 @@ func (d *Driver) Unlock(ctx context.Context) error {
 		SELECT 1 FROM %s
 		WHERE lock_key = $1 AND expires_at >= now()
 		LIMIT 1
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	unlockQuery := fmt.Sprintf(`
 		DELETE FROM %s WHERE lock_key = $1
-	`, quoteIdentifier(d.lockTableName))
+	`, QuoteIdentifier(d.lockTableName))
 
 	var hasLock bool
 	err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
