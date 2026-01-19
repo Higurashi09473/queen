@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+	"strings"
 
 	"github.com/honeynil/queen"
 )
