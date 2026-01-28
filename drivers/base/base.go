@@ -9,6 +9,12 @@
 //   - Common migration operations (GetApplied, Record, Remove)
 //   - SQL identifier quoting strategies
 //   - Placeholder formatting strategies
+//
+// Note:
+// The base driver does not manage dedicated database connections for locking.
+// Some databases (e.g. MySQL with GET_LOCK) require a dedicated connection
+// for locking. In such cases, the concrete driver (e.g., mysql.Driver) is
+// responsible for managing its own *sql.Conn for the lifetime of the lock.
 package base
 
 import (
@@ -39,22 +45,22 @@ type Config struct {
 	ParseTime func(src interface{}) (time.Time, error)
 }
 
-// Driver provides base implementation of common queen.Driver methods.
+// Driver provides a base implementation of common queen.Driver methods.
 //
-// Concrete drivers should embed this type and provide:
-//   - Init() - database-specific schema creation
-//   - Lock()/Unlock() - database-specific locking mechanisms
+// Concrete drivers should embed this type and implement:
+//   - Init()       - database-specific schema creation
+//   - Lock()/Unlock() - database-specific locking mechanisms if needed
 //
 // Note:
-// This base driver does not manage database connections explicitly.
-// Some databases (e.g. MySQL with GET_LOCK) require a dedicated connection
-// for locking. In such cases, the concrete driver (mysql.Driver) is responsible
-// for managing its own *sql.Conn for lock lifetime.
+// The base driver works with a standard *sql.DB connection pool and does not
+// manage dedicated connections. Some databases (e.g., MySQL with GET_LOCK)
+// require a dedicated connection for certain operations. In those cases, the
+// concrete driver (e.g., mysql.Driver) should manage its own *sql.Conn
+// for the lifetime of such operations.
 type Driver struct {
 	DB        *sql.DB
 	TableName string
 	Config    Config
-	conn      *sql.Conn
 }
 
 // Exec executes a function within a transaction.
