@@ -42,20 +42,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/drivers/base"
 )
 
 // Driver implements the queen.Driver interface for MySQL.
 //
 // The driver is thread-safe and can be used concurrently by multiple goroutines.
 // However, Queen already handles locking to prevent concurrent migrations.
+//
+// IMPORTANT:
+// MySQL GET_LOCK() is bound to a single database connection.
+// Therefore this driver keeps a dedicated *sql.Conn while the lock is held,
+// to ensure that both GET_LOCK() and RELEASE_LOCK() are executed on the same
+// underlying connection from the pool.
 type Driver struct {
-	db        *sql.DB
-	tableName string
-	lockName  string
+	base.Driver
+	lockName string
+	conn     *sql.Conn
 }
 
 // New creates a new MySQL driver.
@@ -85,9 +91,18 @@ func New(db *sql.DB) *Driver {
 //	driver := mysql.NewWithTableName(db, "my_custom_migrations")
 func NewWithTableName(db *sql.DB, tableName string) *Driver {
 	return &Driver{
-		db:        db,
-		tableName: tableName,
-		lockName:  "queen_lock_" + tableName,
+		Driver: base.Driver{
+			DB:        db,
+			TableName: tableName,
+			Config: base.Config{
+				Placeholder:     base.PlaceholderQuestion,
+				QuoteIdentifier: base.QuoteBackticks,
+				// ParseTime is nil because MySQL driver handles TIMESTAMP parsing internally
+				// when parseTime=true is set in the DSN.
+				ParseTime: nil,
+			},
+		},
+		lockName: "queen_lock_" + tableName,
 	}
 }
 
@@ -108,92 +123,58 @@ func (d *Driver) Init(ctx context.Context) error {
 			applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			checksum VARCHAR(64) NOT NULL
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-	`, quoteIdentifier(d.tableName))
+	`, d.Config.QuoteIdentifier(d.TableName))
 
-	_, err := d.db.ExecContext(ctx, query)
-	return err
-}
-
-// GetApplied returns all applied migrations sorted by applied_at in ascending order.
-//
-// This is used by Queen to determine which migrations have already been applied
-// and which are pending.
-func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
-	query := fmt.Sprintf(`
-		SELECT version, name, applied_at, checksum
-		FROM %s
-		ORDER BY applied_at ASC
-	`, quoteIdentifier(d.tableName))
-
-	rows, err := d.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var applied []queen.Applied
-	for rows.Next() {
-		var a queen.Applied
-		if err := rows.Scan(&a.Version, &a.Name, &a.AppliedAt, &a.Checksum); err != nil {
-			return nil, err
-		}
-		applied = append(applied, a)
-	}
-
-	return applied, rows.Err()
-}
-
-// Record marks a migration as applied in the database.
-//
-// This should be called after successfully executing a migration's up function.
-// The checksum is automatically computed from the migration content.
-func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
-	query := fmt.Sprintf(`
-		INSERT INTO %s (version, name, checksum)
-		VALUES (?, ?, ?)
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, m.Version, m.Name, m.Checksum())
-	return err
-}
-
-// Remove removes a migration record from the database.
-//
-// This should be called after successfully rolling back a migration's down function.
-func (d *Driver) Remove(ctx context.Context, version string) error {
-	query := fmt.Sprintf(`
-		DELETE FROM %s WHERE version = ?
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, version)
+	_, err := d.DB.ExecContext(ctx, query)
 	return err
 }
 
 // Lock acquires a named lock to prevent concurrent migrations.
 //
-// MySQL uses GET_LOCK() which creates a named lock. The lock is automatically
-// released when the connection closes or when Unlock() is called.
+// MySQL uses GET_LOCK() which creates a named lock bound to the current database
+// connection. The lock is automatically released when the connection closes
+// or when Unlock() is called.
 //
 // The lock name is based on the migrations table name, so different migration
 // tables will use different locks.
 //
+// Because database/sql uses a connection pool, this method explicitly acquires
+// and holds a dedicated *sql.Conn to guarantee that both GET_LOCK() and
+// RELEASE_LOCK() are executed on the same underlying connection.
+//
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
+	// Acquire a dedicated connection from the pool.
+	// MySQL named locks (GET_LOCK) are bound to a single connection,
+	// so we must ensure that the same connection is later used in Unlock().
+	conn, err := d.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get connection: %w", err)
+	}
+
 	// GET_LOCK returns:
-	// 1 if the lock was obtained successfully
-	// 0 if the attempt timed out
+	// 1    if the lock was obtained successfully
+	// 0    if the attempt timed out
 	// NULL if an error occurred
 	var result sql.NullInt64
 	query := "SELECT GET_LOCK(?, ?)"
-	err := d.db.QueryRowContext(ctx, query, d.lockName, int(timeout.Seconds())).Scan(&result)
+
+	err = conn.QueryRowContext(ctx, query, d.lockName, int(timeout.Seconds())).Scan(&result)
 	if err != nil {
+		// Close the connection on error to avoid leaking it.
+		_ = conn.Close()
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
 
+	// If the result is not valid or not equal to 1, the lock was not acquired.
 	if !result.Valid || result.Int64 != 1 {
+		_ = conn.Close()
 		return queen.ErrLockTimeout
 	}
 
+	// Store the connection to ensure RELEASE_LOCK() is executed
+	// on the same underlying connection.
+	d.conn = conn
 	return nil
 }
 
@@ -201,60 +182,36 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 //
 // This should be called in a defer statement after acquiring the lock.
 // It's safe to call even if the lock wasn't acquired.
+//
+// This method releases the named lock using the same database connection
+// that was used in Lock(). After releasing the lock, the connection is closed
+// and returned back to the pool.
 func (d *Driver) Unlock(ctx context.Context) error {
+	// If no connection was stored, there is no lock to release.
+	if d.conn == nil {
+		return nil
+	}
+
 	// RELEASE_LOCK returns:
-	// 1 if the lock was released
-	// 0 if the lock was not held by this thread
+	// 1    if the lock was released
+	// 0    if the lock was not held by this connection
 	// NULL if the named lock did not exist
 	var result sql.NullInt64
 	query := "SELECT RELEASE_LOCK(?)"
-	err := d.db.QueryRowContext(ctx, query, d.lockName).Scan(&result)
+
+	err := d.conn.QueryRowContext(ctx, query, d.lockName).Scan(&result)
 	if err != nil {
 		return fmt.Errorf("failed to release lock: %w", err)
 	}
 
-	// We don't check the result because RELEASE_LOCK might return 0 or NULL
-	// if the lock was already released (e.g., connection closed), which is fine
+	// We don't check the result value because RELEASE_LOCK might return
+	// 0 or NULL if the lock was already released (for example, if the
+	// connection was closed), which is safe in this context.
+	//
+	// After releasing the lock, close the dedicated connection and
+	// return it back to the pool.
+	_ = d.conn.Close()
+	d.conn = nil
+
 	return nil
-}
-
-// Exec executes a function within a transaction.
-//
-// If the function returns an error, the transaction is rolled back.
-// Otherwise, the transaction is committed.
-//
-// This provides ACID guarantees for migration execution.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	if err := fn(tx); err != nil {
-		// Ignore rollback error, return original error
-		_ = tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// Close closes the database connection.
-//
-// Any locks held by this connection will be automatically released.
-func (d *Driver) Close() error {
-	return d.db.Close()
-}
-
-// quoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
-//
-// In MySQL, identifiers are quoted with backticks (`). This function also escapes
-// any existing backticks in the identifier by doubling them.
-//
-// Examples:
-//   - users -> `users`
-//   - my`table -> `my“table`
-func quoteIdentifier(name string) string {
-	escaped := strings.ReplaceAll(name, "`", "``")
-	return "`" + escaped + "`"
 }

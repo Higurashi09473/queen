@@ -6,15 +6,14 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
-	"strings"
 
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/drivers/base"
 )
 
 // Driver implements the queen.Driver interface for CockroachDB.
 type Driver struct {
-	db            *sql.DB
-	tableName     string
+	base.Driver
 	lockTableName string
 	lockKey       string
 }
@@ -48,8 +47,15 @@ func New(db *sql.DB) *Driver {
 // driver := cockroachdb.NewWithTableName(db, "my_custom_migrations")
 func NewWithTableName(db *sql.DB, tableName string) *Driver {
 	return &Driver{
-		db:            db,
-		tableName:     tableName,
+		Driver: base.Driver{
+			DB:        db,
+			TableName: tableName,
+			Config: base.Config{
+				Placeholder:     base.PlaceholderDollar,
+				QuoteIdentifier: base.QuoteDoubleQuotes,
+				ParseTime:       nil,
+			},
+		},
 		lockTableName: tableName + "_lock",
 		lockKey:       "migration_lock",
 	}
@@ -77,9 +83,9 @@ func (d *Driver) Init(ctx context.Context) error {
 			applied_at  TIMESTAMP	 DEFAULT CURRENT_TIMESTAMP,
 			checksum	VARCHAR(64)  NOT NULL
 		)
-	`, QuoteIdentifier(d.tableName))
+	`, d.Config.QuoteIdentifier(d.TableName))
 
-	if _, err := d.db.ExecContext(ctx, migrationsQuery); err != nil {
+	if _, err := d.DB.ExecContext(ctx, migrationsQuery); err != nil {
 		return err
 	}
 
@@ -89,64 +95,9 @@ func (d *Driver) Init(ctx context.Context) error {
 			acquired_at	TIMESTAMP		DEFAULT CURRENT_TIMESTAMP,
 			expires_at	TIMESTAMP		NOT NULL
 		)
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
-	_, err := d.db.ExecContext(ctx, lockQuery)
-	return err
-}
-
-// GetApplied returns all applied migrations sorted by applied_at in ascending order.
-//
-// This is used by Queen to determine which migrations have already been applied
-// and which are pending.
-func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
-	query := fmt.Sprintf(`
-		SELECT version, name, applied_at, checksum
-		FROM %s
-		ORDER BY applied_at ASC
-	`, QuoteIdentifier(d.tableName))
-
-	rows, err := d.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var applied []queen.Applied
-	for rows.Next() {
-		var a queen.Applied
-		if err := rows.Scan(&a.Version, &a.Name, &a.AppliedAt, &a.Checksum); err != nil {
-			return nil, err
-		}
-		applied = append(applied, a)
-	}
-
-	return applied, rows.Err()
-}
-
-// Record marks a migration as applied in the database.
-//
-// This should be called after successfully executing a migration's up function.
-// The checksum is automatically computed from the migration content.
-func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
-	query := fmt.Sprintf(`
-		INSERT INTO %s (version, name, checksum)
-		VALUES ($1, $2, $3)
-	`, QuoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, m.Version, m.Name, m.Checksum())
-	return err
-}
-
-// Remove removes a migration record from the database.
-//
-// This should be called after successfully rolling back a migration's down function.
-func (d *Driver) Remove(ctx context.Context, version string) error {
-	query := fmt.Sprintf(`
-		DELETE FROM %s WHERE version = $1
-	`, QuoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, version)
+	_, err := d.DB.ExecContext(ctx, lockQuery)
 	return err
 }
 
@@ -178,27 +129,27 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	cleanupQuery := fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE lock_key = $1 AND expires_at <= now()
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
 	// Check if active lock exists
 	checkQuery := fmt.Sprintf(`
 		SELECT 1 FROM %s
 		WHERE lock_key = $1 AND expires_at >= now()
 		LIMIT 1
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
 	// Simple insert query
 	insertQuery := fmt.Sprintf(`
 		INSERT INTO %s (lock_key, expires_at) VALUES ($1, $2)
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
 	for {
 		// Clean expired locks first (best effort, ignore errors)
-		_, _ = d.db.ExecContext(ctx, cleanupQuery, d.lockKey)
+		_, _ = d.DB.ExecContext(ctx, cleanupQuery, d.lockKey)
 
 		// Check if an active lock exists
 		var hasLock bool
-		err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
+		err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
 		if err != nil && err != sql.ErrNoRows {
 			// Database error, wait and retry
 			goto retry
@@ -206,7 +157,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 
 		// If no active lock exists, try to insert
 		if !hasLock {
-			_, err := d.db.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
+			_, err := d.DB.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
 			if err == nil {
 				return nil // Lock acquired successfully
 			}
@@ -242,62 +193,34 @@ func (d *Driver) Unlock(ctx context.Context) error {
 		SELECT 1 FROM %s
 		WHERE lock_key = $1 AND expires_at >= now()
 		LIMIT 1
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
 	unlockQuery := fmt.Sprintf(`
 		DELETE FROM %s WHERE lock_key = $1
-	`, QuoteIdentifier(d.lockTableName))
+	`, d.Config.QuoteIdentifier(d.lockTableName))
 
 	var hasLock bool
-	err := d.db.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
+	err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	if !hasLock{
+	if !hasLock {
 		return nil
 	}
 
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
-	_, err = d.db.ExecContext(ctx, unlockQuery, d.lockKey)
+	_, err = d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
 
 	// Gracefully ignore "no rows" scenarios - the lock may have been released by
 	// another cleanup process.
 	return err
 }
 
-// Exec executes a function within a transaction.
-//
-// If the function returns an error, the transaction is rolled back.
-// Otherwise, the transaction is committed.
-//
-// This provides ACID guarantees for migration execution.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	if err := fn(tx); err != nil {
-		// Ignore rollback error, return original error
-		_ = tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// Close closes the database connection.
-//
-// Any locks held by this connection will be automatically released.
-func (d *Driver) Close() error {
-	return d.db.Close()
-}
-
 // QuoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
 // In CockroachDB, identifiers are quoted with double quotes.
+//
+// This function is provided for backward compatibility.
 func QuoteIdentifier(name string) string {
-	// Replace any existing double quotes with two double quotes (escaping)
-	// and wrap the identifier in double quotes
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	return base.QuoteDoubleQuotes(name)
 }

@@ -48,8 +48,6 @@
 // # Compatibility
 //
 //   - SQLite 3.8+ (uses WITHOUT ROWID optimization where available)
-//   - Works on all platforms (Linux, macOS, Windows)
-//   - Single file, no server required
 package sqlite
 
 import (
@@ -60,6 +58,7 @@ import (
 	"time"
 
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/drivers/base"
 )
 
 // Driver implements the queen.Driver interface for SQLite.
@@ -68,8 +67,7 @@ import (
 // locking means only one write operation (migration) can occur at a time.
 // This is handled automatically by PRAGMA locking_mode=EXCLUSIVE.
 type Driver struct {
-	db        *sql.DB
-	tableName string
+	base.Driver
 }
 
 // New creates a new SQLite driver.
@@ -103,8 +101,15 @@ func New(db *sql.DB) *Driver {
 //	driver := sqlite.NewWithTableName(db, "my_migrations")
 func NewWithTableName(db *sql.DB, tableName string) *Driver {
 	return &Driver{
-		db:        db,
-		tableName: tableName,
+		Driver: base.Driver{
+			DB:        db,
+			TableName: tableName,
+			Config: base.Config{
+				Placeholder:     base.PlaceholderQuestion,
+				QuoteIdentifier: base.QuoteDoubleQuotes,
+				ParseTime:       base.ParseTimeISO8601, // SQLite stores timestamps as TEXT
+			},
+		},
 	}
 }
 
@@ -128,79 +133,9 @@ func (d *Driver) Init(ctx context.Context) error {
 			applied_at TEXT NOT NULL DEFAULT (datetime('now')),
 			checksum TEXT NOT NULL
 		) WITHOUT ROWID
-	`, quoteIdentifier(d.tableName))
+	`, d.Config.QuoteIdentifier(d.TableName))
 
-	_, err := d.db.ExecContext(ctx, query)
-	return err
-}
-
-// GetApplied returns all applied migrations sorted by applied_at in ascending order.
-//
-// This is used by Queen to determine which migrations have already been applied
-// and which are pending.
-//
-// Note: SQLite stores timestamps as TEXT in ISO8601 format. We parse them back
-// to time.Time for consistency with other drivers.
-func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
-	query := fmt.Sprintf(`
-		SELECT version, name, applied_at, checksum
-		FROM %s
-		ORDER BY applied_at ASC
-	`, quoteIdentifier(d.tableName))
-
-	rows, err := d.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var applied []queen.Applied
-	for rows.Next() {
-		var a queen.Applied
-		var appliedAtStr string
-		if err := rows.Scan(&a.Version, &a.Name, &appliedAtStr, &a.Checksum); err != nil {
-			return nil, err
-		}
-
-		// Parse ISO8601 timestamp
-		// SQLite default format: "YYYY-MM-DD HH:MM:SS"
-		appliedAt, err := time.Parse("2006-01-02 15:04:05", appliedAtStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse applied_at timestamp: %w", err)
-		}
-		a.AppliedAt = appliedAt
-
-		applied = append(applied, a)
-	}
-
-	return applied, rows.Err()
-}
-
-// Record marks a migration as applied in the database.
-//
-// This should be called after successfully executing a migration's up function.
-// The checksum is automatically computed from the migration content.
-//
-// The timestamp is automatically set by SQLite to the current time.
-func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
-	query := fmt.Sprintf(`
-		INSERT INTO %s (version, name, checksum)
-		VALUES (?, ?, ?)
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, m.Version, m.Name, m.Checksum())
-	return err
-}
-
-// Remove removes a migration record from the database.
-//
-// This should be called after successfully rolling back a migration's down function.
-func (d *Driver) Remove(ctx context.Context, version string) error {
-	query := fmt.Sprintf(`
-		DELETE FROM %s WHERE version = ?
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, version)
+	_, err := d.DB.ExecContext(ctx, query)
 	return err
 }
 
@@ -217,21 +152,21 @@ func (d *Driver) Remove(ctx context.Context, version string) error {
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	// Set busy_timeout for lock acquisition attempts
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", timeout.Milliseconds()))
+	_, err := d.DB.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", timeout.Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("failed to set busy_timeout: %w", err)
 	}
 
 	// Set EXCLUSIVE locking mode - this locks the database file
 	// preventing other connections from acquiring locks
-	_, err = d.db.ExecContext(ctx, "PRAGMA locking_mode = EXCLUSIVE")
+	_, err = d.DB.ExecContext(ctx, "PRAGMA locking_mode = EXCLUSIVE")
 	if err != nil {
 		return fmt.Errorf("failed to set locking mode: %w", err)
 	}
 
 	// Force the lock to be acquired immediately by starting and committing a write transaction
 	// This ensures we actually acquire the lock now, not lazily later
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := d.DB.BeginTx(ctx, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "database is locked") {
 			return queen.ErrLockTimeout
@@ -268,13 +203,13 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // It's safe to call even if the lock wasn't acquired.
 func (d *Driver) Unlock(ctx context.Context) error {
 	// Reset locking mode to NORMAL
-	_, err := d.db.ExecContext(ctx, "PRAGMA locking_mode = NORMAL")
+	_, err := d.DB.ExecContext(ctx, "PRAGMA locking_mode = NORMAL")
 	if err != nil {
 		return fmt.Errorf("failed to reset locking mode: %w", err)
 	}
 
 	// Execute a transaction to force the locking mode change to take effect
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := d.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin unlock transaction: %w", err)
 	}
@@ -285,49 +220,4 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// Exec executes a function within a transaction.
-//
-// If the function returns an error, the transaction is rolled back.
-// Otherwise, the transaction is committed.
-//
-// This provides ACID guarantees for migration execution.
-//
-// Note: SQLite supports nested transactions using SAVEPOINT, but this
-// driver uses simple transactions for compatibility and simplicity.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	if err := fn(tx); err != nil {
-		// Ignore rollback error, return original error
-		_ = tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// Close closes the database connection.
-//
-// If you're using a file-based database (not :memory:), the database file
-// persists after closing. For in-memory databases, all data is lost.
-func (d *Driver) Close() error {
-	return d.db.Close()
-}
-
-// quoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
-//
-// In SQLite, identifiers can be quoted with double quotes ("), square brackets [],
-// or backticks `. This function uses double quotes as it's the SQL standard.
-//
-// Examples:
-//   - users -> "users"
-//   - my"table -> "my""table"
-func quoteIdentifier(name string) string {
-	escaped := strings.ReplaceAll(name, `"`, `""`)
-	return `"` + escaped + `"`
 }

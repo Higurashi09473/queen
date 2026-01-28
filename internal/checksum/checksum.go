@@ -16,7 +16,7 @@ func Calculate(content ...string) string {
 	h := sha256.New()
 
 	for _, c := range content {
-		normalized := normalizeWhitecpace(c)
+		normalized := normalizeWhitespace(c)
 		h.Write([]byte(normalized))
 	}
 
@@ -26,7 +26,7 @@ func Calculate(content ...string) string {
 // normalizeWhitespace removes leading/trailing whitespace from each line
 // and collapses multiple blank lines into one.
 // This ensures formatting changes don't affect the checksum.
-func normalizeWhitecpace(s string) string {
+func normalizeWhitespace(s string) string {
 	lines := strings.Split(s, "\n")
 	result := make([]string, 0, len(lines))
 
