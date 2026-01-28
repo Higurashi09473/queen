@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/honeynil/queen"
 	"github.com/honeynil/queen/drivers/base"
 )
 
@@ -118,67 +117,30 @@ func (d *Driver) Init(ctx context.Context) error {
 //
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
-	start := time.Now()
-	expiresAt := time.Now().Add(timeout)
-
-	// Exponential backoff: start at 50ms, max 1s
-	backoff := 50 * time.Millisecond
-	maxBackoff := 1 * time.Second
-
-	// Clean up expired locks
-	cleanupQuery := fmt.Sprintf(`
-		DELETE FROM %s
-		WHERE lock_key = $1 AND expires_at <= now()
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	// Check if active lock exists
-	checkQuery := fmt.Sprintf(`
-		SELECT 1 FROM %s
-		WHERE lock_key = $1 AND expires_at >= now()
-		LIMIT 1
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	// Simple insert query
-	insertQuery := fmt.Sprintf(`
-		INSERT INTO %s (lock_key, expires_at) VALUES ($1, $2)
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	for {
-		// Clean expired locks first (best effort, ignore errors)
-		_, _ = d.DB.ExecContext(ctx, cleanupQuery, d.lockKey)
-
-		// Check if an active lock exists
-		var hasLock bool
-		err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
-		if err != nil && err != sql.ErrNoRows {
-			// Database error, wait and retry
-			goto retry
-		}
-
-		// If no active lock exists, try to insert
-		if !hasLock {
-			_, err := d.DB.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
-			if err == nil {
-				return nil // Lock acquired successfully
+	cfg := base.TableLockConfig{
+		CleanupQuery: fmt.Sprintf(
+			"DELETE FROM %s WHERE lock_key = $1 AND expires_at < now()",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		CheckQuery: fmt.Sprintf(
+			"SELECT 1 FROM %s WHERE lock_key = $1 AND expires_at >= now() LIMIT 1",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		InsertQuery: fmt.Sprintf(
+			"INSERT INTO %s (lock_key, expires_at) VALUES ($1, $2)",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		ScanFunc: func(row *sql.Row) (bool, error) {
+			var exists int
+			err := row.Scan(&exists)
+			if err != nil && err != sql.ErrNoRows {
+				return false, err
 			}
-			// Insert failed (possible race condition), retry with backoff
-		}
-
-	retry:
-		// Check timeout
-		if time.Since(start) >= timeout {
-			return queen.ErrLockTimeout
-		}
-
-		// Wait with exponential backoff
-		select {
-		case <-time.After(backoff):
-			// Double the backoff for next iteration, up to maxBackoff
-			backoff = min(backoff*2, maxBackoff)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+			return exists != 0, nil
+		},
 	}
+
+	return base.AcquireTableLock(ctx, d.DB, cfg, timeout)
 }
 
 // Unlock releases the migration lock.
