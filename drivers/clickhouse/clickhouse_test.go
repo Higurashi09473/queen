@@ -10,6 +10,7 @@ import (
 	_ "github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/drivers/base"
 )
 
 // TestQuoteIdentifier tests the identifier quoting function.
@@ -48,9 +49,9 @@ func TestQuoteIdentifier(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := quoteIdentifier(tt.input)
+			result := base.QuoteDoubleQuotes(tt.input)
 			if result != tt.expected {
-				t.Errorf("quoteIdentifier(%q) = %q; want %q", tt.input, result, tt.expected)
+				t.Errorf("base.QuoteDoubleQuotes(%q) = %q; want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -62,21 +63,21 @@ func TestDriverCreation(t *testing.T) {
 
 	t.Run("New creates driver with default table name", func(t *testing.T) {
 		driver := New(db)
-		if driver.db != db {
-			t.Error("driver.db should be set")
+		if driver.DB != db {
+			t.Error("driver.DB should be set")
 		}
-		if driver.tableName != "queen_migrations" {
-			t.Errorf("driver.tableName = %q; want %q", driver.tableName, "queen_migrations")
+		if driver.TableName != "queen_migrations" {
+			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "queen_migrations")
 		}
 	})
 
 	t.Run("NewWithTableName creates driver with custom table name", func(t *testing.T) {
 		driver := NewWithTableName(db, "custom_migrations")
-		if driver.db != db {
-			t.Error("driver.db should be set")
+		if driver.DB != db {
+			t.Error("driver.DB should be set")
 		}
-		if driver.tableName != "custom_migrations" {
-			t.Errorf("driver.tableName = %q; want %q", driver.tableName, "custom_migrations")
+		if driver.TableName != "custom_migrations" {
+			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "custom_migrations")
 		}
 	})
 }

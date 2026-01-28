@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/drivers/base"
 )
 
 // Driver implements the queen.Driver interface for PostgreSQL.
 type Driver struct {
-	db        *sql.DB
-	tableName string
-	lockID    int64
+	base.Driver
+	lockID int64
 }
 
 // New creates a new PostgreSQL driver.
@@ -27,9 +27,16 @@ func New(db *sql.DB) *Driver {
 // NewWithTableName creates a new PostgreSQL driver with a custom table name.
 func NewWithTableName(db *sql.DB, tableName string) *Driver {
 	return &Driver{
-		db:        db,
-		tableName: tableName,
-		lockID:    hashTableName(tableName), // Unique lock ID based on table name
+		Driver: base.Driver{
+			DB:        db,
+			TableName: tableName,
+			Config: base.Config{
+				Placeholder:     base.PlaceholderDollar,
+				QuoteIdentifier: base.QuoteDoubleQuotes,
+				ParseTime:       nil, // PostgreSQL supports TIMESTAMP natively
+			},
+		},
+		lockID: hashTableName(tableName), // Unique lock ID based on table name
 	}
 }
 
@@ -42,56 +49,9 @@ func (d *Driver) Init(ctx context.Context) error {
 			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			checksum VARCHAR(64) NOT NULL
 		)
-	`, quoteIdentifier(d.tableName))
+	`, d.Config.QuoteIdentifier(d.TableName))
 
-	_, err := d.db.ExecContext(ctx, query)
-	return err
-}
-
-// GetApplied returns all applied migrations sorted by applied_at.
-func (d *Driver) GetApplied(ctx context.Context) ([]queen.Applied, error) {
-	query := fmt.Sprintf(`
-		SELECT version, name, applied_at, checksum
-		FROM %s
-		ORDER BY applied_at ASC
-	`, quoteIdentifier(d.tableName))
-
-	rows, err := d.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }() // Explicitly ignore error on close
-
-	var applied []queen.Applied
-	for rows.Next() {
-		var a queen.Applied
-		if err := rows.Scan(&a.Version, &a.Name, &a.AppliedAt, &a.Checksum); err != nil {
-			return nil, err
-		}
-		applied = append(applied, a)
-	}
-
-	return applied, rows.Err()
-}
-
-// Record marks a migration as applied.
-func (d *Driver) Record(ctx context.Context, m *queen.Migration) error {
-	query := fmt.Sprintf(`
-		INSERT INTO %s (version, name, checksum)
-		VALUES ($1, $2, $3)
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, m.Version, m.Name, m.Checksum())
-	return err
-}
-
-// Remove removes a migration record (for rollback).
-func (d *Driver) Remove(ctx context.Context, version string) error {
-	query := fmt.Sprintf(`
-		DELETE FROM %s WHERE version = $1
-	`, quoteIdentifier(d.tableName))
-
-	_, err := d.db.ExecContext(ctx, query, version)
+	_, err := d.DB.ExecContext(ctx, query)
 	return err
 }
 
@@ -100,14 +60,14 @@ func (d *Driver) Remove(ctx context.Context, version string) error {
 // or when explicitly unlocked.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	// Set lock timeout
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = '%dms'", timeout.Milliseconds()))
+	_, err := d.DB.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = '%dms'", timeout.Milliseconds()))
 	if err != nil {
 		return err
 	}
 
 	// Try to acquire advisory lock
 	var acquired bool
-	err = d.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", d.lockID).Scan(&acquired)
+	err = d.DB.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", d.lockID).Scan(&acquired)
 	if err != nil {
 		return err
 	}
@@ -121,29 +81,8 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 
 // Unlock releases the advisory lock.
 func (d *Driver) Unlock(ctx context.Context) error {
-	_, err := d.db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", d.lockID)
+	_, err := d.DB.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", d.lockID)
 	return err
-}
-
-// Exec executes a function within a transaction.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	if err := fn(tx); err != nil {
-		// Ignore rollback error, return original error
-		_ = tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// Close closes the database connection.
-func (d *Driver) Close() error {
-	return d.db.Close()
 }
 
 // hashTableName creates a unique int64 hash from the table name for advisory locks.
@@ -154,20 +93,4 @@ func hashTableName(name string) int64 {
 		hash = hash*31 + int64(c) + int64(i)
 	}
 	return hash
-}
-
-// quoteIdentifier quotes a SQL identifier (table name, column name) to prevent SQL injection.
-// In PostgreSQL, identifiers are quoted with double quotes.
-func quoteIdentifier(name string) string {
-	// Replace any existing double quotes with two double quotes (escaping)
-	// and wrap the identifier in double quotes
-	escaped := ""
-	for _, c := range name {
-		if c == '"' {
-			escaped += "\"\""
-		} else {
-			escaped += string(c)
-		}
-	}
-	return `"` + escaped + `"`
 }

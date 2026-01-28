@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/honeynil/queen/cli"
 	"github.com/honeynil/queen"
+	"github.com/honeynil/queen/cli"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const CockroachTestDSN = "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
@@ -64,21 +64,21 @@ func TestDriverCreation(t *testing.T) {
 
 	t.Run("New creates driver with default table name", func(t *testing.T) {
 		driver := New(db)
-		if driver.db != db {
-			t.Error("driver.db should be set")
+		if driver.DB != db {
+			t.Error("driver.DB should be set")
 		}
-		if driver.tableName != cli.DefaultTableName {
-			t.Errorf("driver.tableName = %q; want %q", driver.tableName, "queen_migrations")
+		if driver.TableName != cli.DefaultTableName {
+			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "queen_migrations")
 		}
 	})
 
 	t.Run("NewWithTableName creates driver with custom table name", func(t *testing.T) {
 		driver := NewWithTableName(db, "custom_migrations")
-		if driver.db != db {
-			t.Error("driver.db should be set")
+		if driver.DB != db {
+			t.Error("driver.DB should be set")
 		}
-		if driver.tableName != "custom_migrations" {
-			t.Errorf("driver.tableName = %q; want %q", driver.tableName, "custom_migrations")
+		if driver.TableName != "custom_migrations" {
+			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "custom_migrations")
 		}
 	})
 }
