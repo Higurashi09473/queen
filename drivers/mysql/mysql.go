@@ -169,7 +169,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	// If the result is not valid or not equal to 1, the lock was not acquired.
 	if !result.Valid || result.Int64 != 1 {
 		_ = conn.Close()
-		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s' (MySQL)",
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s'",
 			queen.ErrLockTimeout, d.lockName, d.TableName)
 	}
 
@@ -201,7 +201,7 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	err := d.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", d.lockName).Scan(&result)
 
 	if err != nil {
-		return fmt.Errorf("failed to release named lock '%s' for table '%s' (MySQL): %w",
+		return fmt.Errorf("failed to release named lock '%s' for table '%s': %w",
 			d.lockName, d.TableName, err)
 	}
 

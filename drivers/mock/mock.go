@@ -1,11 +1,10 @@
 // Package mock provides an in-memory mock driver for testing Queen without a real database.
 //
-// IMPORTANT: Mock driver only works with Go function migrations (UpFunc/DownFunc).
-// SQL migrations (UpSQL/DownSQL) require a real database connection and will panic
-// when used with the mock driver.
+// This driver uses SQLite in-memory database to support both SQL and Go function migrations.
+// SQL migrations are executed but data is not persisted (exists only in memory).
 //
-// For testing SQL migrations, use a real database (e.g., postgres in Docker) or
-// use the testcontainers library.
+// For integration testing with persistent data, use a real database driver instead
+// (e.g., postgres, mysql, sqlite with file).
 package mock
 
 import (
@@ -16,11 +15,13 @@ import (
 	"time"
 
 	"github.com/honeynil/queen"
+	_ "github.com/mattn/go-sqlite3" // SQLite driver for in-memory DB
 )
 
 // Driver is an in-memory mock implementation of queen.Driver for testing.
 type Driver struct {
 	mu        sync.Mutex
+	db        *sql.DB // In-memory SQLite database
 	applied   map[string]queen.Applied
 	locked    bool
 	initErr   error
@@ -28,9 +29,20 @@ type Driver struct {
 	recordErr error
 }
 
-// New creates a new mock driver.
+// New creates a new mock driver with an in-memory SQLite database.
+//
+// The in-memory database allows SQL migrations to be executed for testing,
+// but data is not persisted and is lost when the driver is closed.
 func New() *Driver {
+	// Create in-memory SQLite database
+	// Using ":memory:" creates a new database in RAM
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		panic("mock driver: failed to create in-memory database: " + err.Error())
+	}
+
 	return &Driver{
+		db:      db,
 		applied: make(map[string]queen.Applied),
 		locked:  false,
 	}
@@ -142,15 +154,28 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	return nil
 }
 
-// Exec executes a function (mock doesn't actually use transactions).
+// Exec executes a function within a real SQLite transaction.
+//
+// This allows SQL migrations to be executed against the in-memory database.
 func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	// Mock driver doesn't have real transactions, so we pass nil
-	// The function should handle nil tx gracefully in tests
-	return fn(nil)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
 }
 
-// Close closes the mock driver (no-op).
+// Close closes the in-memory database connection.
 func (d *Driver) Close() error {
+	if d.db != nil {
+		return d.db.Close()
+	}
 	return nil
 }
 
@@ -176,7 +201,11 @@ func (d *Driver) HasVersion(version string) bool {
 	return exists
 }
 
-// Reset clears all applied migrations (for testing).
+// Reset clears all applied migrations metadata (for testing).
+//
+// Note: This only clears the migration tracking metadata. It does NOT
+// reset the in-memory database schema or data. To reset the database,
+// create a new mock driver instance.
 func (d *Driver) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
