@@ -116,6 +116,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	naturalsort "github.com/honeynil/queen/internal/sort"
@@ -254,7 +255,7 @@ func (q *Queen) UpSteps(ctx context.Context, n int) error {
 
 	for _, m := range pending {
 		if err := q.applyMigration(ctx, m); err != nil {
-			return newMigrationError(m.Version, m.Name, err)
+			return newMigrationError(m.Version, m.Name, "up", q.getDriverName(), err)
 		}
 	}
 
@@ -302,11 +303,11 @@ func (q *Queen) Down(ctx context.Context, n int) error {
 
 	for _, m := range toRollback {
 		if !m.HasRollback() {
-			return newMigrationError(m.Version, m.Name, fmt.Errorf("no down migration defined"))
+			return newMigrationError(m.Version, m.Name, "down", q.getDriverName(), fmt.Errorf("no down migration defined"))
 		}
 
 		if err := q.rollbackMigration(ctx, m); err != nil {
-			return newMigrationError(m.Version, m.Name, err)
+			return newMigrationError(m.Version, m.Name, "down", q.getDriverName(), err)
 		}
 	}
 
@@ -344,11 +345,11 @@ func (q *Queen) Reset(ctx context.Context) error {
 	// Don't call Down() to avoid double-locking
 	for _, m := range applied {
 		if !m.HasRollback() {
-			return newMigrationError(m.Version, m.Name, fmt.Errorf("no down migration defined"))
+			return newMigrationError(m.Version, m.Name, "down", q.getDriverName(), fmt.Errorf("no down migration defined"))
 		}
 
 		if err := q.rollbackMigration(ctx, m); err != nil {
-			return newMigrationError(m.Version, m.Name, err)
+			return newMigrationError(m.Version, m.Name, "down", q.getDriverName(), err)
 		}
 	}
 
@@ -443,6 +444,32 @@ func (q *Queen) Close() error {
 		return q.driver.Close()
 	}
 	return nil
+}
+
+// getDriverName returns the driver name for error context.
+// It attempts to extract the driver name from the driver's package path.
+func (q *Queen) getDriverName() string {
+	if q.driver == nil {
+		return "unknown"
+	}
+
+	// Get the type name using reflection
+	driverType := fmt.Sprintf("%T", q.driver)
+
+	// Extract driver name from package path
+	// Example: "*postgres.Driver" -> "postgres"
+	//          "*mysql.Driver" -> "mysql"
+	if idx := strings.LastIndex(driverType, "."); idx != -1 {
+		if idx2 := strings.LastIndex(driverType[:idx], "/"); idx2 != -1 {
+			return driverType[idx2+1 : idx]
+		}
+		// Handle case like "*postgres.Driver"
+		driverType = driverType[:idx]
+		driverType = strings.TrimPrefix(driverType, "*")
+		return driverType
+	}
+
+	return "unknown"
 }
 
 // loadApplied caches applied migrations from database.

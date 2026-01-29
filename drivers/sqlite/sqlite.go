@@ -169,7 +169,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	_, err = d.DB.ExecContext(ctx, "BEGIN IMMEDIATE")
 	if err != nil {
 		if strings.Contains(err.Error(), "database is locked") {
-			return fmt.Errorf("%w: failed to acquire exclusive lock for table '%s' (SQLite)",
+			return fmt.Errorf("%w: failed to acquire exclusive lock for table '%s'",
 				queen.ErrLockTimeout, d.TableName)
 		}
 		return fmt.Errorf("failed to begin immediate transaction: %w", err)
@@ -196,19 +196,19 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	// Reset locking mode to NORMAL
 	_, err := d.DB.ExecContext(ctx, "PRAGMA locking_mode = NORMAL")
 	if err != nil {
-		return fmt.Errorf("failed to reset locking mode for table '%s' (SQLite): %w",
+		return fmt.Errorf("failed to reset locking mode for table '%s': %w",
 			d.TableName, err)
 	}
 
 	// Execute a transaction to force the locking mode change to take effect
 	tx, err := d.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin unlock transaction for table '%s' (SQLite): %w",
+		return fmt.Errorf("failed to begin unlock transaction for table '%s': %w",
 			d.TableName, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit unlock transaction for table '%s' (SQLite): %w",
+		return fmt.Errorf("failed to commit unlock transaction for table '%s': %w",
 			d.TableName, err)
 	}
 

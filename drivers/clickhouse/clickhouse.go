@@ -154,7 +154,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 
 	err := base.AcquireTableLock(ctx, d.DB, cfg, timeout)
 	if err == queen.ErrLockTimeout {
-		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s' (ClickHouse)",
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s'",
 			queen.ErrLockTimeout, d.lockKey, d.lockTableName)
 	}
 	return err
@@ -179,7 +179,7 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	// We intentionally don't check if the lock exists first to avoid race conditions
 	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
 	if err != nil {
-		return fmt.Errorf("failed to release lock '%s' for table '%s' (ClickHouse): %w",
+		return fmt.Errorf("failed to release lock '%s' for table '%s': %w",
 			d.lockKey, d.TableName, err)
 	}
 	// Gracefully ignore "no rows" scenarios - the lock might have expired via TTL

@@ -73,7 +73,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	}
 
 	if !acquired {
-		return fmt.Errorf("%w: failed to acquire advisory lock '%d' for table '%s' (PostgreSQL)",
+		return fmt.Errorf("%w: failed to acquire advisory lock '%d' for table '%s'",
 			queen.ErrLockTimeout, d.lockID, d.TableName)
 	}
 
@@ -84,7 +84,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 func (d *Driver) Unlock(ctx context.Context) error {
 	_, err := d.DB.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", d.lockID)
 	if err != nil {
-		return fmt.Errorf("failed to release advisory lock '%d' for table '%s' (PostgreSQL): %w",
+		return fmt.Errorf("failed to release advisory lock '%d' for table '%s': %w",
 			d.lockID, d.TableName, err)
 	}
 	return nil
