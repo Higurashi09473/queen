@@ -126,8 +126,40 @@ func (m *Migration) Validate() error {
 	return nil
 }
 
-// noChecksumMarker indicates that checksum validation is disabled for Go function
-// migrations without an explicit ManualChecksum value.
+// noChecksumMarker is used when checksum validation cannot be performed for
+// Go function migrations without an explicit ManualChecksum.
+//
+// # Why Go Functions Can't Be Hashed
+//
+// Unlike SQL strings, Go functions are compiled runtime values. The function's
+// bytecode is not accessible for inspection or hashing. This means we cannot
+// automatically detect if a Go migration function has been modified after
+// being applied to the database.
+//
+// # Requirement: Set ManualChecksum
+//
+// For Go function migrations (UpFunc/DownFunc), you MUST provide a ManualChecksum
+// to enable integrity validation. Update the checksum whenever you modify the
+// function logic to detect unintended changes.
+//
+// # Example Usage
+//
+//	queen.M{
+//	    Version:        "002",
+//	    Name:           "migrate_user_data",
+//	    ManualChecksum: "v1",  // Required for Go functions
+//	    UpFunc: func(ctx context.Context, tx *sql.Tx) error {
+//	        // Your migration logic here
+//	        return nil
+//	    },
+//	}
+//
+// If you modify the function, update the checksum:
+//
+//	ManualChecksum: "v2"  // Updated after changing the function
+//
+// Without ManualChecksum, the migration will use this marker and skip
+// checksum validation, which may hide accidental modifications.
 const noChecksumMarker = "no-checksum-go-func"
 
 // Checksum returns a hash for validation.
