@@ -156,36 +156,23 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // to acquire the lock.
 //
 // This method is graceful: it returns nil if the lock doesn't exist or was
-// already released.
+// already released. This prevents errors during cleanup when locks expire
+// or in error recovery scenarios.
 func (d *Driver) Unlock(ctx context.Context) error {
-	checkQuery := fmt.Sprintf(
-		"SELECT 1 FROM %s WHERE lock_key = $1 AND expires_at >= now() LIMIT 1",
-		d.Config.QuoteIdentifier(d.lockTableName),
-	)
 	unlockQuery := fmt.Sprintf(
 		"DELETE FROM %s WHERE lock_key = $1",
 		d.Config.QuoteIdentifier(d.lockTableName),
 	)
 
-	var hasLock bool
-	err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check lock existence '%s' for table '%s' (CockroachDB): %w",
-			d.lockKey, d.TableName, err)
-	}
-	if !hasLock {
-		return nil
-	}
-
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
-	_, err = d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
+	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
 	if err != nil {
 		return fmt.Errorf("failed to release lock '%s' for table '%s' (CockroachDB): %w",
 			d.lockKey, d.TableName, err)
 	}
-	// Gracefully ignore "no rows" scenarios - the lock may have been released by
-	// another cleanup process.
+	// Gracefully ignore "no rows" scenarios - the lock may have expired
+	// or been released by another cleanup process
 	return err
 }
 
