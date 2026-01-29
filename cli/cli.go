@@ -40,22 +40,6 @@ type RegisterFunc func(*queen.Queen)
 // It receives the DSN (data source name) and returns a *sql.DB.
 type DBOpener func(dsn string) (*sql.DB, error)
 
-// Driver name constants.
-const (
-	DriverPostgres   = "postgres"
-	DriverPostgreSQL = "postgresql"
-	DriverMySQL      = "mysql"
-	DriverSQLite     = "sqlite"
-	DriverSQLite3    = "sqlite3"
-	DriverClickHouse = "clickhouse"
-
-	// SQL driver names
-	SQLDriverPostgres   = "pgx"
-	SQLDriverMySQL      = "mysql"
-	SQLDriverSQLite     = "sqlite3"
-	SQLDriverClickHouse = "clickhouse"
-)
-
 // Default table name for migrations.
 const DefaultTableName = "queen_migrations"
 
@@ -202,21 +186,6 @@ func (app *App) setupQueen(ctx context.Context) (*queen.Queen, error) {
 	app.registerFunc(q)
 
 	return q, nil
-}
-
-func getSQLDriverName(driverName string) string {
-	switch driverName {
-	case DriverPostgres, DriverPostgreSQL:
-		return SQLDriverPostgres
-	case DriverMySQL:
-		return SQLDriverMySQL
-	case DriverSQLite, DriverSQLite3:
-		return SQLDriverSQLite
-	case DriverClickHouse:
-		return SQLDriverClickHouse
-	default:
-		return driverName
-	}
 }
 
 // loadConfig loads configuration from all sources.
