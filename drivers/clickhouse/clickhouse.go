@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/honeynil/queen"
 	"github.com/honeynil/queen/drivers/base"
 )
 
@@ -151,7 +152,13 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 		},
 	}
 
-	return base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	err := base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	if err == queen.ErrLockTimeout {
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s' (ClickHouse)",
+			queen.ErrLockTimeout, d.lockKey, d.lockTableName)
+	}
+	return err
+
 }
 
 // Unlock releases the migration lock.
@@ -163,14 +170,18 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // already released. This prevents errors during cleanup when locks expire
 // via TTL or in error recovery scenarios.
 func (d *Driver) Unlock(ctx context.Context) error {
-	unlockQuery := fmt.Sprintf(`
-		ALTER TABLE %s DELETE WHERE lock_key = ?
-	`, d.Config.QuoteIdentifier(d.lockTableName))
+	unlockQuery := fmt.Sprintf(
+		"ALTER TABLE %s DELETE WHERE lock_key = ?",
+		d.Config.QuoteIdentifier(d.lockTableName),
+	)
 
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
 	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
-
+	if err != nil {
+		return fmt.Errorf("failed to release lock '%s' for table '%s' (ClickHouse): %w",
+			d.lockKey, d.TableName, err)
+	}
 	// Gracefully ignore "no rows" scenarios - the lock might have expired via TTL
 	// or been released by another cleanup process
 	return err

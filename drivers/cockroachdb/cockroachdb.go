@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/honeynil/queen"
 	"github.com/honeynil/queen/drivers/base"
 )
 
@@ -140,7 +141,13 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 		},
 	}
 
-	return base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	err := base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	if err == queen.ErrLockTimeout {
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s' (CockroachDB)",
+			queen.ErrLockTimeout, d.lockKey, d.lockTableName)
+	}
+	return err
+
 }
 
 // Unlock releases the migration lock.
@@ -151,20 +158,20 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // This method is graceful: it returns nil if the lock doesn't exist or was
 // already released.
 func (d *Driver) Unlock(ctx context.Context) error {
-	checkQuery := fmt.Sprintf(`
-		SELECT 1 FROM %s
-		WHERE lock_key = $1 AND expires_at >= now()
-		LIMIT 1
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	unlockQuery := fmt.Sprintf(`
-		DELETE FROM %s WHERE lock_key = $1
-	`, d.Config.QuoteIdentifier(d.lockTableName))
+	checkQuery := fmt.Sprintf(
+		"SELECT 1 FROM %s WHERE lock_key = $1 AND expires_at >= now() LIMIT 1",
+		d.Config.QuoteIdentifier(d.lockTableName),
+	)
+	unlockQuery := fmt.Sprintf(
+		"DELETE FROM %s WHERE lock_key = $1",
+		d.Config.QuoteIdentifier(d.lockTableName),
+	)
 
 	var hasLock bool
 	err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&hasLock)
 	if err != nil && err != sql.ErrNoRows {
-		return err
+		return fmt.Errorf("failed to check lock existence '%s' for table '%s' (CockroachDB): %w",
+			d.lockKey, d.TableName, err)
 	}
 	if !hasLock {
 		return nil
@@ -173,7 +180,10 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
 	_, err = d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
-
+	if err != nil {
+		return fmt.Errorf("failed to release lock '%s' for table '%s' (CockroachDB): %w",
+			d.lockKey, d.TableName, err)
+	}
 	// Gracefully ignore "no rows" scenarios - the lock may have been released by
 	// another cleanup process.
 	return err
