@@ -169,7 +169,8 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 	// If the result is not valid or not equal to 1, the lock was not acquired.
 	if !result.Valid || result.Int64 != 1 {
 		_ = conn.Close()
-		return queen.ErrLockTimeout
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s'",
+			queen.ErrLockTimeout, d.lockName, d.TableName)
 	}
 
 	// Store the connection to ensure RELEASE_LOCK() is executed
@@ -197,11 +198,11 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	// 0    if the lock was not held by this connection
 	// NULL if the named lock did not exist
 	var result sql.NullInt64
-	query := "SELECT RELEASE_LOCK(?)"
+	err := d.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", d.lockName).Scan(&result)
 
-	err := d.conn.QueryRowContext(ctx, query, d.lockName).Scan(&result)
 	if err != nil {
-		return fmt.Errorf("failed to release lock: %w", err)
+		return fmt.Errorf("failed to release named lock '%s' for table '%s': %w",
+			d.lockName, d.TableName, err)
 	}
 
 	// We don't check the result value because RELEASE_LOCK might return

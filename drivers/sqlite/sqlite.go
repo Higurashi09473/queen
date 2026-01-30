@@ -164,29 +164,20 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 		return fmt.Errorf("failed to set locking mode: %w", err)
 	}
 
-	// Force the lock to be acquired immediately by starting and committing a write transaction
-	// This ensures we actually acquire the lock now, not lazily later
-	tx, err := d.DB.BeginTx(ctx, nil)
+	// Force the lock to be acquired immediately using BEGIN IMMEDIATE
+	// This acquires a RESERVED lock right away instead of waiting for the first write
+	_, err = d.DB.ExecContext(ctx, "BEGIN IMMEDIATE")
 	if err != nil {
 		if strings.Contains(err.Error(), "database is locked") {
-			return queen.ErrLockTimeout
+			return fmt.Errorf("%w: failed to acquire exclusive lock for table '%s'",
+				queen.ErrLockTimeout, d.TableName)
 		}
-		return fmt.Errorf("failed to begin lock transaction: %w", err)
-	}
-
-	// Perform a write operation to force exclusive lock acquisition
-	_, err = tx.ExecContext(ctx, "CREATE TEMP TABLE IF NOT EXISTS _queen_lock_test (id INTEGER)")
-	if err != nil {
-		_ = tx.Rollback()
-		if strings.Contains(err.Error(), "database is locked") {
-			return queen.ErrLockTimeout
-		}
-		return fmt.Errorf("failed to acquire exclusive lock: %w", err)
+		return fmt.Errorf("failed to begin immediate transaction: %w", err)
 	}
 
 	// Commit the transaction - we don't need to keep it open
 	// The EXCLUSIVE locking mode remains in effect for the connection
-	err = tx.Commit()
+	_, err = d.DB.ExecContext(ctx, "COMMIT")
 	if err != nil {
 		return fmt.Errorf("failed to commit lock transaction: %w", err)
 	}
@@ -205,18 +196,20 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	// Reset locking mode to NORMAL
 	_, err := d.DB.ExecContext(ctx, "PRAGMA locking_mode = NORMAL")
 	if err != nil {
-		return fmt.Errorf("failed to reset locking mode: %w", err)
+		return fmt.Errorf("failed to reset locking mode for table '%s': %w",
+			d.TableName, err)
 	}
 
 	// Execute a transaction to force the locking mode change to take effect
 	tx, err := d.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin unlock transaction: %w", err)
+		return fmt.Errorf("failed to begin unlock transaction for table '%s': %w",
+			d.TableName, err)
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("failed to commit unlock transaction: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit unlock transaction for table '%s': %w",
+			d.TableName, err)
 	}
 
 	return nil

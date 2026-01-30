@@ -130,71 +130,35 @@ func (d *Driver) Init(ctx context.Context) error {
 //
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
-	start := time.Now()
-	expiresAt := time.Now().Add(timeout)
-
-	// Exponential backoff: start at 50ms, max 1s
-	backoff := 50 * time.Millisecond
-	maxBackoff := 1 * time.Second
-
-	// Clean up expired locks (async operation in ClickHouse)
-	cleanupQuery := fmt.Sprintf(`
-		ALTER TABLE %s DELETE WHERE lock_key = ? AND expires_at < now64(3)
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	// Check if active lock exists - CRITICAL: use FINAL for ReplacingMergeTree
-	// FINAL ensures we see deduplicated data, accounting for async merges
-	checkQuery := fmt.Sprintf(`
-		SELECT count(*) FROM %s FINAL
-		WHERE lock_key = ? AND expires_at >= now64(3)
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	// Simple insert query
-	insertQuery := fmt.Sprintf(`
-		INSERT INTO %s (lock_key, expires_at) VALUES (?, ?)
-	`, d.Config.QuoteIdentifier(d.lockTableName))
-
-	for {
-		// Clean expired locks first (best effort, ignore errors)
-		// Note: This is async, but TTL will eventually clean up
-		_, _ = d.DB.ExecContext(ctx, cleanupQuery, d.lockKey)
-
-		// Check if an active lock exists using FINAL to see deduplicated state
-		var count int64
-		err := d.DB.QueryRowContext(ctx, checkQuery, d.lockKey).Scan(&count)
-		if err != nil && err != sql.ErrNoRows {
-			// Database error, wait and retry
-			goto retry
-		}
-
-		// If no active lock exists, try to insert
-		if count == 0 {
-			_, err := d.DB.ExecContext(ctx, insertQuery, d.lockKey, expiresAt)
-			if err == nil {
-				return nil // Lock acquired successfully
+	cfg := base.TableLockConfig{
+		CleanupQuery: fmt.Sprintf(
+			"ALTER TABLE %s DELETE WHERE lock_key = ? AND expires_at < now64(3)",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		CheckQuery: fmt.Sprintf(
+			"SELECT count(*) FROM %s FINAL WHERE lock_key = ? AND expires_at >= now64(3)",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		InsertQuery: fmt.Sprintf(
+			"INSERT INTO %s (lock_key, expires_at) VALUES (?, ?)",
+			d.Config.QuoteIdentifier(d.lockTableName),
+		),
+		ScanFunc: func(row *sql.Row) (bool, error) {
+			var count int64
+			if err := row.Scan(&count); err != nil {
+				return false, err
 			}
-			// Insert failed (possible race condition), retry with backoff
-		}
-
-	retry:
-		// Check timeout
-		if time.Since(start) >= timeout {
-			return queen.ErrLockTimeout
-		}
-
-		// Wait with exponential backoff
-		select {
-		case <-time.After(backoff):
-			// Double the backoff for next iteration, up to maxBackoff
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+			return count > 0, nil
+		},
 	}
+
+	err := base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	if err == queen.ErrLockTimeout {
+		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s'",
+			queen.ErrLockTimeout, d.lockKey, d.lockTableName)
+	}
+	return err
+
 }
 
 // Unlock releases the migration lock.
@@ -206,14 +170,18 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // already released. This prevents errors during cleanup when locks expire
 // via TTL or in error recovery scenarios.
 func (d *Driver) Unlock(ctx context.Context) error {
-	unlockQuery := fmt.Sprintf(`
-		ALTER TABLE %s DELETE WHERE lock_key = ?
-	`, d.Config.QuoteIdentifier(d.lockTableName))
+	unlockQuery := fmt.Sprintf(
+		"ALTER TABLE %s DELETE WHERE lock_key = ?",
+		d.Config.QuoteIdentifier(d.lockTableName),
+	)
 
 	// Execute DELETE - it's safe even if lock doesn't exist
 	// We intentionally don't check if the lock exists first to avoid race conditions
 	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
-
+	if err != nil {
+		return fmt.Errorf("failed to release lock '%s' for table '%s': %w",
+			d.lockKey, d.TableName, err)
+	}
 	// Gracefully ignore "no rows" scenarios - the lock might have expired via TTL
 	// or been released by another cleanup process
 	return err
