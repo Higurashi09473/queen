@@ -16,7 +16,9 @@ func (d *testDriver) Record(ctx context.Context, m *Migration) error         { r
 func (d *testDriver) Remove(ctx context.Context, version string) error       { return nil }
 func (d *testDriver) Lock(ctx context.Context, timeout time.Duration) error  { return nil }
 func (d *testDriver) Unlock(ctx context.Context) error                       { return nil }
-func (d *testDriver) Exec(ctx context.Context, fn func(*sql.Tx) error) error { return nil }
+func (d *testDriver) Exec(ctx context.Context, isolationLevel sql.IsolationLevel, fn func(*sql.Tx) error) error {
+	return nil
+}
 func (d *testDriver) Close() error                                           { return nil }
 
 func TestGetDriverName(t *testing.T) {

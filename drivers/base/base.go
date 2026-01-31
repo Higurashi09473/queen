@@ -63,15 +63,26 @@ type Driver struct {
 	Config    Config
 }
 
-// Exec executes a function within a transaction.
+// Exec executes a function within a transaction with the specified isolation level.
 //
 // If the function returns an error, the transaction is rolled back.
 // Otherwise, the transaction is committed.
 //
+// The isolationLevel parameter controls transaction isolation:
+//   - sql.LevelDefault: use database default
+//   - sql.LevelReadUncommitted: allow dirty reads
+//   - sql.LevelReadCommitted: prevent dirty reads
+//   - sql.LevelRepeatableRead: prevent non-repeatable reads
+//   - sql.LevelSerializable: full isolation
+//
 // This provides ACID guarantees for migration execution.
 // Identical implementation for all database drivers.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.DB.BeginTx(ctx, nil)
+func (d *Driver) Exec(ctx context.Context, isolationLevel sql.IsolationLevel, fn func(*sql.Tx) error) error {
+	txOpts := &sql.TxOptions{
+		Isolation: isolationLevel,
+	}
+
+	tx, err := d.DB.BeginTx(ctx, txOpts)
 	if err != nil {
 		return err
 	}

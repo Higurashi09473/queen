@@ -92,6 +92,25 @@ type Migration struct {
 	// Update this whenever you modify the function.
 	ManualChecksum string
 
+	// IsolationLevel sets the transaction isolation level for this migration.
+	// Default: sql.LevelDefault (uses Config.IsolationLevel or database default)
+	//
+	// This overrides the global Config.IsolationLevel for this specific migration.
+	//
+	// Use cases:
+	//   - Critical migrations requiring SERIALIZABLE isolation
+	//   - Bulk data migrations that can use READ COMMITTED for better performance
+	//   - Preventing race conditions during schema changes
+	//
+	// Example:
+	//   queen.M{
+	//       Version: "003",
+	//       Name:    "critical_update",
+	//       IsolationLevel: sql.LevelSerializable,
+	//       UpSQL:   "UPDATE users SET ...",
+	//   }
+	IsolationLevel sql.IsolationLevel
+
 	// Lazy-loaded checksum cache. sync.Once pointer prevents copylocks warning
 	// when Migration is passed by value.
 	checksumOnce *sync.Once
