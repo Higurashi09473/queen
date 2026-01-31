@@ -143,6 +143,102 @@ Rollback all applied migrations.
 migrate reset
 ```
 
+### plan
+
+Show migration execution plan (dry-run mode).
+
+```bash
+migrate plan [--direction up|down] [--limit N] [--json]
+```
+
+**Options:**
+- `--direction`: Migration direction - `up` (default) or `down`
+- `--limit N`: Show only N migrations (default: all)
+- `--json`: Output in JSON format for CI/CD integration
+
+**Examples:**
+```bash
+migrate plan                    # Show pending migrations
+migrate plan --direction down   # Show what would be rolled back
+migrate plan --limit 3          # Show next 3 pending migrations
+migrate plan --json             # JSON output for CI/CD
+```
+
+**Table output:**
+```
+Migration Plan (UP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+→ 002  add_email      sql      pending
+→ 003  migrate_data   go-func  pending  ⚠️  No rollback defined
+
+2 migration(s) will be applied
+⚠️  1 migration(s) with warnings
+```
+
+**JSON output:**
+```json
+{
+  "direction": "up",
+  "plans": [
+    {
+      "version": "002",
+      "name": "add_email",
+      "direction": "up",
+      "status": "pending",
+      "type": "sql",
+      "sql": "ALTER TABLE users ADD COLUMN email VARCHAR(255)",
+      "has_rollback": true,
+      "is_destructive": false,
+      "checksum": "abc123...",
+      "warnings": []
+    }
+  ],
+  "summary": {
+    "total": 2,
+    "with_rollback": 1,
+    "with_warnings": 1
+  }
+}
+```
+
+### explain
+
+Explain a specific migration.
+
+```bash
+migrate explain <version> [--json]
+```
+
+**Options:**
+- `--json`: Output in JSON format
+
+**Examples:**
+```bash
+migrate explain 001       # Explain migration 001
+migrate explain 001 --json # JSON output
+```
+
+**Output:**
+```
+Migration: 001
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Name:          create_users
+Status:        applied
+Type:          sql
+Direction:     up
+Has Rollback:  true
+Checksum:      a1b2c3d4...
+
+UP SQL:
+------------------------------------------------------------
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE
+)
+------------------------------------------------------------
+```
+
 ### status
 
 Show migration status.
