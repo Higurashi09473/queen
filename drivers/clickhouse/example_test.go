@@ -24,7 +24,10 @@ func Example() {
 	defer db.Close()
 
 	// Create ClickHouse driver
-	driver := clickhouse.New(db)
+	driver, err := clickhouse.New(db)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Create Queen instance
 	q := queen.New(driver)
@@ -65,11 +68,17 @@ func Example() {
 
 // Example_customTableName demonstrates using a custom table name for migrations.
 func Example_customTableName() {
-	db, _ := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	db, err := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer db.Close()
 
 	// Use custom table name
-	driver := clickhouse.NewWithTableName(db, "my_custom_migrations")
+	driver, err := clickhouse.NewWithTableName(db, "my_custom_migrations")
+	if err != nil {
+		log.Fatal(err)
+	}
 	q := queen.New(driver)
 	defer q.Close()
 
@@ -79,10 +88,16 @@ func Example_customTableName() {
 
 // Example_goFunctionMigration demonstrates using Go functions for complex migrations.
 func Example_goFunctionMigration() {
-	db, _ := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	db, err := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer db.Close()
 
-	driver := clickhouse.New(db)
+	driver, err := clickhouse.New(db)
+	if err != nil {
+		log.Fatal(err)
+	}
 	q := queen.New(driver)
 	defer q.Close()
 
@@ -178,10 +193,16 @@ func Example_goFunctionMigration() {
 
 // Example_withConfig demonstrates using custom configuration.
 func Example_withConfig() {
-	db, _ := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	db, err := sql.Open("clickhouse", "clickhouse://default:password@localhost:9000/default?")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer db.Close()
 
-	driver := clickhouse.New(db)
+	driver, err := clickhouse.New(db)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Create Queen with custom config
 	config := &queen.Config{
@@ -212,7 +233,10 @@ func Example_status() {
 		return
 	}
 
-	driver := clickhouse.New(db)
+	driver, err := clickhouse.New(db)
+	if err != nil {
+		log.Fatal(err)
+	}
 	q := queen.New(driver)
 	defer q.Close()
 

@@ -19,6 +19,7 @@ linters:
       - linters:
           - errcheck
           - goconst
+          - gocyclo
         path: _test\.go
     paths:
       - third_party$

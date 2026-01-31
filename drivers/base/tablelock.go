@@ -40,18 +40,27 @@ type TableLockConfig struct {
 // This function is intended for databases without native advisory locks
 // (e.g., ClickHouse, CockroachDB).
 //
+// The lockKey identifies which lock to acquire (e.g., "migration_lock").
+// The ownerID uniquely identifies the process acquiring the lock, preventing
+// one process from unlocking another process's lock.
+//
 // Lock mechanism:
 // 1. Cleans up expired locks using CleanupQuery (best effort, ignores errors)
 // 2. Checks if an active lock exists using CheckQuery and ScanFunc
 // 3. If no active lock exists, attempts to insert a new lock record using InsertQuery
 // 4. Retries with exponential backoff until the lock is acquired or timeout is reached
 //
+// Query parameters:
+// - CleanupQuery: receives (lockKey, expiresAt)
+// - CheckQuery: receives (lockKey)
+// - InsertQuery: receives (lockKey, expiresAt, ownerID)
+//
 // Exponential backoff:
 // - Starts at 50ms and doubles after each retry
 // - Maximum backoff is 1 second
 //
 // If the lock cannot be acquired within the timeout, returns queen.ErrLockTimeout.
-func AcquireTableLock(ctx context.Context, db *sql.DB, config TableLockConfig, timeout time.Duration) error {
+func AcquireTableLock(ctx context.Context, db *sql.DB, config TableLockConfig, lockKey, ownerID string, timeout time.Duration) error {
 	start := time.Now()
 	expiresAt := time.Now().Add(timeout)
 
@@ -60,10 +69,10 @@ func AcquireTableLock(ctx context.Context, db *sql.DB, config TableLockConfig, t
 
 	for {
 		// Step 1: clean up expired locks (best effort)
-		_, _ = db.ExecContext(ctx, config.CleanupQuery, expiresAt)
+		_, _ = db.ExecContext(ctx, config.CleanupQuery, lockKey, expiresAt)
 
 		// Step 2: check if an active lock exists
-		row := db.QueryRowContext(ctx, config.CheckQuery)
+		row := db.QueryRowContext(ctx, config.CheckQuery, lockKey)
 		hasLock, err := config.ScanFunc(row)
 		if err != nil && err != sql.ErrNoRows {
 			// Database error, retry with backoff
@@ -72,7 +81,7 @@ func AcquireTableLock(ctx context.Context, db *sql.DB, config TableLockConfig, t
 
 		// Step 3: if no lock exists, try to insert
 		if !hasLock {
-			_, err := db.ExecContext(ctx, config.InsertQuery, expiresAt)
+			_, err := db.ExecContext(ctx, config.InsertQuery, lockKey, expiresAt, ownerID)
 			if err == nil {
 				// Lock acquired successfully
 				return nil

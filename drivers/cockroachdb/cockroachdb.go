@@ -16,6 +16,7 @@ type Driver struct {
 	base.Driver
 	lockTableName string
 	lockKey       string
+	ownerID       string
 }
 
 // New creates a new CockroachDB driver.
@@ -31,8 +32,11 @@ type Driver struct {
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	driver := cockroachdb.New(db)
-func New(db *sql.DB) *Driver {
+//	driver, err := cockroachdb.New(db)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+func New(db *sql.DB) (*Driver, error) {
 	return NewWithTableName(db, "queen_migrations")
 }
 
@@ -44,8 +48,16 @@ func New(db *sql.DB) *Driver {
 //
 // Example:
 //
-// driver := cockroachdb.NewWithTableName(db, "my_custom_migrations")
-func NewWithTableName(db *sql.DB, tableName string) *Driver {
+//	driver, err := cockroachdb.NewWithTableName(db, "my_custom_migrations")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+func NewWithTableName(db *sql.DB, tableName string) (*Driver, error) {
+	ownerID, err := base.GenerateOwnerID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate lock owner ID: %w", err)
+	}
+
 	return &Driver{
 		Driver: base.Driver{
 			DB:        db,
@@ -58,7 +70,8 @@ func NewWithTableName(db *sql.DB, tableName string) *Driver {
 		},
 		lockTableName: tableName + "_lock",
 		lockKey:       "migration_lock",
-	}
+		ownerID:       ownerID,
+	}, nil
 }
 
 // Init creates the migrations tracking table and lock table if they don't exist.
@@ -93,7 +106,8 @@ func (d *Driver) Init(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS %s (
 			lock_key	VARCHAR(255)	PRIMARY KEY,
 			acquired_at	TIMESTAMP		DEFAULT CURRENT_TIMESTAMP,
-			expires_at	TIMESTAMP		NOT NULL
+			expires_at	TIMESTAMP		NOT NULL,
+			owner_id	VARCHAR(64)		NOT NULL
 		)
 	`, d.Config.QuoteIdentifier(d.lockTableName))
 
@@ -128,7 +142,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 			d.Config.QuoteIdentifier(d.lockTableName),
 		),
 		InsertQuery: fmt.Sprintf(
-			"INSERT INTO %s (lock_key, expires_at) VALUES ($1, $2)",
+			"INSERT INTO %s (lock_key, expires_at, owner_id) VALUES ($1, $2, $3)",
 			d.Config.QuoteIdentifier(d.lockTableName),
 		),
 		ScanFunc: func(row *sql.Row) (bool, error) {
@@ -141,7 +155,7 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 		},
 	}
 
-	err := base.AcquireTableLock(ctx, d.DB, cfg, timeout)
+	err := base.AcquireTableLock(ctx, d.DB, cfg, d.lockKey, d.ownerID, timeout)
 	if err == queen.ErrLockTimeout {
 		return fmt.Errorf("%w: failed to acquire lock '%s' for table '%s'",
 			queen.ErrLockTimeout, d.lockKey, d.lockTableName)
@@ -155,24 +169,28 @@ func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
 // This removes the lock record from the lock table, allowing other processes
 // to acquire the lock.
 //
-// This method is graceful: it returns nil if the lock doesn't exist or was
-// already released. This prevents errors during cleanup when locks expire
-// or in error recovery scenarios.
+// The unlock operation checks the owner_id to ensure only the process that
+// acquired the lock can release it. This prevents race conditions where an
+// expired lock is released by the wrong process.
+//
+// This method is graceful: it returns nil if the lock doesn't exist, was
+// already released, or belongs to another process. This prevents errors
+// during cleanup when locks expire or in error recovery scenarios.
 func (d *Driver) Unlock(ctx context.Context) error {
 	unlockQuery := fmt.Sprintf(
-		"DELETE FROM %s WHERE lock_key = $1",
+		"DELETE FROM %s WHERE lock_key = $1 AND owner_id = $2",
 		d.Config.QuoteIdentifier(d.lockTableName),
 	)
 
-	// Execute DELETE - it's safe even if lock doesn't exist
+	// Execute DELETE - it's safe even if lock doesn't exist or belongs to another process
 	// We intentionally don't check if the lock exists first to avoid race conditions
-	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey)
+	_, err := d.DB.ExecContext(ctx, unlockQuery, d.lockKey, d.ownerID)
 	if err != nil {
 		return fmt.Errorf("failed to release lock '%s' for table '%s': %w",
 			d.lockKey, d.TableName, err)
 	}
-	// Gracefully ignore "no rows" scenarios - the lock may have expired
-	// or been released by another cleanup process
+	// Gracefully ignore "no rows" scenarios - the lock may have expired,
+	// been released by another cleanup process, or belong to another process
 	return err
 }
 
