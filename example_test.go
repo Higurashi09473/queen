@@ -331,6 +331,37 @@ func ExampleTestHelper_TestUpDown() {
 	testFunc(t)
 }
 
+// ExampleTestHelper_TestRollback demonstrates thorough testing of down migrations.
+func ExampleTestHelper_TestRollback() {
+	testFunc := func(t *testing.T) {
+		driver := setupTestDB(t)
+		q := queen.NewTest(t, driver)
+
+		q.MustAdd(queen.M{
+			Version: "001",
+			Name:    "create_users",
+			UpSQL:   `CREATE TABLE users (id INT)`,
+			DownSQL: `DROP TABLE users`,
+		})
+
+		q.MustAdd(queen.M{
+			Version: "002",
+			Name:    "add_email",
+			UpSQL:   `ALTER TABLE users ADD COLUMN email VARCHAR(255)`,
+			DownSQL: `ALTER TABLE users DROP COLUMN email`,
+		})
+
+		// TestRollback performs a full cycle: Up -> Down (one by one) -> Up
+		// This catches broken Down migrations that don't properly undo their Up
+		q.TestRollback()
+
+		fmt.Println("All down migrations work correctly")
+	}
+
+	t := &testing.T{}
+	testFunc(t)
+}
+
 func setupTestDB(_ *testing.T) queen.Driver {
 	// Your test database setup logic
 	// This is just a placeholder for the example
