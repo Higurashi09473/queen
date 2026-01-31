@@ -547,6 +547,74 @@ Example log output (JSON format):
 {"time":"2024-01-31T10:00:02Z","level":"INFO","msg":"lock released","table":"queen_migrations"}
 ```
 
+### Transaction Isolation Levels
+
+Control transaction isolation levels for migrations to prevent race conditions and optimize performance.
+
+#### Global Configuration
+
+Set a default isolation level for all migrations:
+
+```go
+import "database/sql"
+
+config := &queen.Config{
+    IsolationLevel: sql.LevelSerializable, // Strongest isolation
+}
+q := queen.NewWithConfig(driver, config)
+```
+
+#### Per-Migration Configuration
+
+Override the global setting for specific migrations:
+
+```go
+q.MustAdd(queen.M{
+    Version:        "003",
+    Name:           "critical_update",
+    IsolationLevel: sql.LevelSerializable, // Override for this migration
+    UpSQL:          "UPDATE accounts SET balance = balance - 100 WHERE id = 1",
+    DownSQL:        "UPDATE accounts SET balance = balance + 100 WHERE id = 1",
+})
+```
+
+#### Isolation Levels
+
+| Level | Description | PostgreSQL | MySQL | SQLite |
+|-------|-------------|------------|-------|--------|
+| `LevelDefault` | Use database default | ✅ READ COMMITTED | ✅ REPEATABLE READ | ✅ SERIALIZABLE |
+| `LevelReadUncommitted` | Allow dirty reads | ✅ | ✅ | ❌ |
+| `LevelReadCommitted` | Prevent dirty reads | ✅ (default) | ✅ | ❌ |
+| `LevelRepeatableRead` | Prevent non-repeatable reads | ✅ | ✅ (default) | ❌ |
+| `LevelSerializable` | Full isolation | ✅ | ✅ | ✅ (only option) |
+
+#### Use Cases
+
+**High Concurrency (READ COMMITTED):**
+```go
+// Fast bulk updates - allows other transactions to proceed
+q.MustAdd(queen.M{
+    Version:        "004",
+    Name:           "bulk_data_migration",
+    IsolationLevel: sql.LevelReadCommitted,
+    UpSQL:          "UPDATE users SET migrated = true WHERE created_at < '2024-01-01'",
+})
+```
+
+**Critical Operations (SERIALIZABLE):**
+```go
+// Prevents race conditions in financial operations
+q.MustAdd(queen.M{
+    Version:        "005",
+    Name:           "transfer_funds",
+    IsolationLevel: sql.LevelSerializable,
+    UpFunc: func(ctx context.Context, tx *sql.Tx) error {
+        // Complex multi-table update requiring full isolation
+        return nil
+    },
+})
+```
+
 ## API Documentation
 
 See [pkg.go.dev](https://pkg.go.dev/github.com/honeynil/queen) for complete API documentation.

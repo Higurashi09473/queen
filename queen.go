@@ -147,6 +147,19 @@ type Config struct {
 	// Naming configures migration version naming validation.
 	// Default: nil (no validation, for backward compatibility)
 	Naming *NamingConfig
+
+	// IsolationLevel sets the default transaction isolation level for all migrations.
+	// Default: sql.LevelDefault (uses database default)
+	//
+	// Supported levels:
+	//   - sql.LevelDefault: use database default
+	//   - sql.LevelReadUncommitted: allow dirty reads
+	//   - sql.LevelReadCommitted: prevent dirty reads (PostgreSQL default)
+	//   - sql.LevelRepeatableRead: prevent non-repeatable reads (MySQL default)
+	//   - sql.LevelSerializable: full isolation (SQLite default)
+	//
+	// Individual migrations can override this with their own IsolationLevel.
+	IsolationLevel sql.IsolationLevel
 }
 
 // DefaultConfig returns default settings: "queen_migrations" table, 30min lock timeout.
@@ -694,16 +707,35 @@ func (q *Queen) getAppliedMigrations() []*Migration {
 	return applied
 }
 
+// getIsolationLevel returns the effective isolation level for a migration.
+// Priority: Migration.IsolationLevel -> Config.IsolationLevel -> LevelDefault
+func (q *Queen) getIsolationLevel(m *Migration) sql.IsolationLevel {
+	if m.IsolationLevel != sql.LevelDefault {
+		return m.IsolationLevel
+	}
+	if q.config.IsolationLevel != sql.LevelDefault {
+		return q.config.IsolationLevel
+	}
+	return sql.LevelDefault
+}
+
 // applyMigration applies a single migration.
 func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
 	start := time.Now()
-	q.logger.InfoContext(ctx, "migration started",
+	isolationLevel := q.getIsolationLevel(m)
+
+	logArgs := []any{
 		"version", m.Version,
 		"name", m.Name,
-		"direction", "up")
+		"direction", "up",
+	}
+	if isolationLevel != sql.LevelDefault {
+		logArgs = append(logArgs, "isolation_level", isolationLevel.String())
+	}
+	q.logger.InfoContext(ctx, "migration started", logArgs...)
 
-	// Execute migration in transaction
-	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
+	// Execute migration in transaction with specified isolation level
+	err := q.driver.Exec(ctx, isolationLevel, func(tx *sql.Tx) error {
 		return m.executeUp(ctx, tx)
 	})
 	if err != nil {
@@ -747,13 +779,20 @@ func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
 // rollbackMigration rolls back a single migration.
 func (q *Queen) rollbackMigration(ctx context.Context, m *Migration) error {
 	start := time.Now()
-	q.logger.InfoContext(ctx, "migration started",
+	isolationLevel := q.getIsolationLevel(m)
+
+	logArgs := []any{
 		"version", m.Version,
 		"name", m.Name,
-		"direction", "down")
+		"direction", "down",
+	}
+	if isolationLevel != sql.LevelDefault {
+		logArgs = append(logArgs, "isolation_level", isolationLevel.String())
+	}
+	q.logger.InfoContext(ctx, "migration started", logArgs...)
 
-	// Execute rollback in transaction
-	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
+	// Execute rollback in transaction with specified isolation level
+	err := q.driver.Exec(ctx, isolationLevel, func(tx *sql.Tx) error {
 		return m.executeDown(ctx, tx)
 	})
 	if err != nil {

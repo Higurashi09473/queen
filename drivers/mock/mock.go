@@ -154,11 +154,15 @@ func (d *Driver) Unlock(ctx context.Context) error {
 	return nil
 }
 
-// Exec executes a function within a real SQLite transaction.
+// Exec executes a function within a real SQLite transaction with the specified isolation level.
 //
 // This allows SQL migrations to be executed against the in-memory database.
-func (d *Driver) Exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := d.db.BeginTx(ctx, nil)
+func (d *Driver) Exec(ctx context.Context, isolationLevel sql.IsolationLevel, fn func(*sql.Tx) error) error {
+	txOpts := &sql.TxOptions{
+		Isolation: isolationLevel,
+	}
+
+	tx, err := d.db.BeginTx(ctx, txOpts)
 	if err != nil {
 		return err
 	}

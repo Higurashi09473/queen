@@ -316,4 +316,6 @@ func (d *mockDriver) Unlock(ctx context.Context) error                       { r
 func (d *mockDriver) GetApplied(ctx context.Context) ([]Applied, error)      { return nil, nil }
 func (d *mockDriver) Record(ctx context.Context, migration *Migration) error { return nil }
 func (d *mockDriver) Remove(ctx context.Context, version string) error       { return nil }
-func (d *mockDriver) Exec(ctx context.Context, fn func(*sql.Tx) error) error { return nil }
+func (d *mockDriver) Exec(ctx context.Context, isolationLevel sql.IsolationLevel, fn func(*sql.Tx) error) error {
+	return nil
+}
