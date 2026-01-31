@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/honeynil/queen"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,7 +29,15 @@ type Config struct {
 // ConfigFile represents the structure of .queen.yaml
 type ConfigFile struct {
 	ConfigLocked bool                    `yaml:"config_locked"`
+	Naming       *NamingConfig           `yaml:"naming"`
 	Environments map[string]*Environment `yaml:",inline"`
+}
+
+// NamingConfig represents naming pattern configuration in YAML.
+type NamingConfig struct {
+	Pattern string `yaml:"pattern"` // sequential, sequential-padded, semver
+	Padding int    `yaml:"padding"` // for sequential-padded
+	Enforce *bool  `yaml:"enforce"` // pointer to distinguish between unset and false
 }
 
 // Environment represents a single environment configuration.
@@ -116,4 +125,32 @@ func (app *App) getEnvironmentName() string {
 		return app.config.Env
 	}
 	return "custom"
+}
+
+// getNamingConfig converts CLI NamingConfig to queen.NamingConfig.
+func (nc *NamingConfig) toQueenNamingConfig() *queen.NamingConfig {
+	if nc == nil {
+		return nil
+	}
+
+	config := &queen.NamingConfig{
+		Pattern: queen.NamingPattern(nc.Pattern),
+		Padding: nc.Padding,
+		Enforce: true, // default
+	}
+
+	if nc.Enforce != nil {
+		config.Enforce = *nc.Enforce
+	}
+
+	return config
+}
+
+// getNamingConfig returns the naming configuration from the config file.
+func (app *App) getNamingConfig() *queen.NamingConfig {
+	if app.config.configFile == nil || app.config.configFile.Naming == nil {
+		return nil
+	}
+
+	return app.config.configFile.Naming.toQueenNamingConfig()
 }

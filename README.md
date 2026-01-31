@@ -399,6 +399,78 @@ config := &queen.Config{
 q := queen.NewWithConfig(driver, config)
 ```
 
+### Naming Pattern Enforcement
+
+Queen can enforce naming conventions to prevent migration versioning mistakes. This is especially useful for teams to maintain consistency.
+
+#### Sequential Padded (Recommended)
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSequentialPadded,
+        Padding: 3,       // Generates: 001, 002, 003, ...
+        Enforce: true,    // Reject non-conforming versions
+    },
+}
+
+q := queen.NewWithConfig(driver, config)
+
+q.MustAdd(queen.M{Version: "001", Name: "create_users"})  // ✅ OK
+q.MustAdd(queen.M{Version: "002", Name: "add_email"})     // ✅ OK
+q.MustAdd(queen.M{Version: "1", Name: "invalid"})         // ❌ Error: wrong format
+```
+
+#### Sequential
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSequential, // Generates: 1, 2, 3, ...
+        Enforce: true,
+    },
+}
+```
+
+#### Semantic Versioning
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSemver, // Enforces: 1.0.0, 1.1.0, 2.0.0
+        Enforce: true,
+    },
+}
+
+q.MustAdd(queen.M{Version: "1.0.0", Name: "initial"})  // ✅ OK
+q.MustAdd(queen.M{Version: "1.1.0", Name: "feature"})  // ✅ OK
+```
+
+#### CLI Integration
+
+When using the CLI with `.queen.yaml`, the naming pattern is automatically applied:
+
+```yaml
+# .queen.yaml
+naming:
+  pattern: sequential-padded
+  padding: 3
+  enforce: true
+
+development:
+  driver: postgres
+  dsn: postgres://localhost/dev
+```
+
+```bash
+# CLI automatically uses the pattern
+migrate create add_users
+# Creates: migrations/001_add_users.go with Version: "001"
+
+migrate create add_posts
+# Creates: migrations/002_add_posts.go with Version: "002"
+```
+
 ## API Documentation
 
 See [pkg.go.dev](https://pkg.go.dev/github.com/honeynil/queen) for complete API documentation.
@@ -482,19 +554,36 @@ Then use it:
 # Build
 go build -o migrate cmd/migrate/main.go
 
-# Configure
+# Configure via environment variables
 export QUEEN_DRIVER=postgres
 export QUEEN_DSN="postgres://localhost/myapp?sslmode=disable"
 
-# Use
-./migrate up              # Apply all pending migrations
-./migrate down            # Rollback last migration
-./migrate status          # Show migration status
-./migrate create add_foo  # Create new migration
-./migrate validate        # Validate checksums
-```
+# Or create .queen.yaml
+cat > .queen.yaml <<EOF
+naming:
+  pattern: sequential-padded
+  padding: 3
+  enforce: true
 
-See [CLI documentation](docs/CLI.md) for full details on commands, flags, and configuration.
+development:
+  driver: postgres
+  dsn: postgres://localhost/myapp_dev?sslmode=disable
+
+production:
+  driver: postgres
+  dsn: postgres://localhost/myapp?sslmode=disable
+  require_confirmation: true
+  require_explicit_unlock: true
+EOF
+
+# Use
+./migrate up                       # Apply all pending migrations
+./migrate down                     # Rollback last migration
+./migrate status                   # Show migration status
+./migrate create add_foo           # Create new migration (auto-numbered: 001, 002, ...)
+./migrate validate                 # Validate checksums
+./migrate --env production status  # Use production environment from config
+```
 
 ## License
 
