@@ -66,7 +66,7 @@ func (app *App) createDriver(db *sql.DB) (queen.Driver, error) {
 		return sqlite.New(db), nil
 
 	case "clickhouse":
-		return clickhouse.New(db), nil
+		return clickhouse.New(db)
 
 	default:
 		return nil, fmt.Errorf("unsupported driver: %s (supported: postgres, mysql, sqlite, clickhouse)", app.config.Driver)

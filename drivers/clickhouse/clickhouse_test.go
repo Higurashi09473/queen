@@ -62,22 +62,48 @@ func TestDriverCreation(t *testing.T) {
 	db := &sql.DB{} // Mock DB for testing
 
 	t.Run("New creates driver with default table name", func(t *testing.T) {
-		driver := New(db)
+		driver, err := New(db)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
 		if driver.DB != db {
 			t.Error("driver.DB should be set")
 		}
 		if driver.TableName != "queen_migrations" {
 			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "queen_migrations")
 		}
+		if driver.ownerID == "" {
+			t.Error("driver.ownerID should be set")
+		}
 	})
 
 	t.Run("NewWithTableName creates driver with custom table name", func(t *testing.T) {
-		driver := NewWithTableName(db, "custom_migrations")
+		driver, err := NewWithTableName(db, "custom_migrations")
+		if err != nil {
+			t.Fatalf("NewWithTableName() failed: %v", err)
+		}
 		if driver.DB != db {
 			t.Error("driver.DB should be set")
 		}
 		if driver.TableName != "custom_migrations" {
 			t.Errorf("driver.TableName = %q; want %q", driver.TableName, "custom_migrations")
+		}
+		if driver.ownerID == "" {
+			t.Error("driver.ownerID should be set")
+		}
+	})
+
+	t.Run("New generates unique owner IDs", func(t *testing.T) {
+		driver1, err := New(db)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		driver2, err := New(db)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		if driver1.ownerID == driver2.ownerID {
+			t.Error("expected different owner IDs for different driver instances")
 		}
 	})
 }
@@ -125,11 +151,14 @@ func TestInit(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Init should create the table
-	err := driver.Init(ctx)
+	err = driver.Init(ctx)
 	if err != nil {
 		t.Fatalf("Init() failed: %v", err)
 	}
@@ -156,7 +185,10 @@ func TestRecordAndGetApplied(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Init
@@ -233,7 +265,10 @@ func TestRemove(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Init and record a migration
@@ -264,7 +299,7 @@ func TestRemove(t *testing.T) {
 	}
 
 	// Should now be empty
-	applied, err := driver.GetApplied(ctx)
+	applied, err = driver.GetApplied(ctx)
 	if err != nil {
 		t.Fatalf("GetApplied() failed: %v", err)
 	}
@@ -277,7 +312,10 @@ func TestLocking(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	if err := driver.Init(ctx); err != nil {
@@ -285,7 +323,7 @@ func TestLocking(t *testing.T) {
 	}
 
 	// Acquire lock
-	err := driver.Lock(ctx, 5*time.Second)
+	err = driver.Lock(ctx, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Lock() failed: %v", err)
 	}
@@ -315,7 +353,10 @@ func TestExec(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	if err := driver.Init(ctx); err != nil {
@@ -323,7 +364,7 @@ func TestExec(t *testing.T) {
 	}
 
 	// Test successful transaction
-	err := driver.Exec(ctx, func(tx *sql.Tx) error {
+	err = driver.Exec(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			CREATE TABLE test_users (
 				id UUID DEFAULT generateUUIDv4(),
@@ -364,7 +405,10 @@ func TestFullMigrationCycle(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	q := queen.New(driver)
 	defer q.Close()
 
@@ -403,7 +447,7 @@ func TestFullMigrationCycle(t *testing.T) {
 
 	// Verify tables exist
 	var tableCount uint64
-	err := db.QueryRowContext(ctx,
+	err = db.QueryRowContext(ctx,
 		"SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('test_users', 'test_posts')").Scan(&tableCount)
 	if err != nil {
 		t.Fatalf("failed to check tables: %v", err)
@@ -446,7 +490,10 @@ func TestTimestampParsing(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	if err := driver.Init(ctx); err != nil {
@@ -491,7 +538,10 @@ func TestUnlock_WhenNotLocked(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	ctx := context.Background()
 
 	if err := driver.Init(ctx); err != nil {
@@ -499,9 +549,106 @@ func TestUnlock_WhenNotLocked(t *testing.T) {
 	}
 
 	// Try to unlock when not locked - should be graceful and not return error
-	err := driver.Unlock(ctx)
+	err = driver.Unlock(ctx)
 	if err != nil {
 		t.Errorf("expected nil when unlocking without lock (graceful), got: %v", err)
+	}
+}
+
+func TestLockOwnership_PreventsCrossProcessUnlock(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create two driver instances simulating two processes
+	driverA, err := New(db)
+	if err != nil {
+		t.Fatalf("New(driverA) failed: %v", err)
+	}
+	driverB, err := New(db)
+	if err != nil {
+		t.Fatalf("New(driverB) failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	if err := driverA.Init(ctx); err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
+
+	// Process A acquires lock
+	if err := driverA.Lock(ctx, 30*time.Second); err != nil {
+		t.Fatalf("driverA.Lock() failed: %v", err)
+	}
+
+	// Simulate lock expiration by manually deleting the lock
+	// In ClickHouse, we need to use ALTER TABLE DELETE
+	_, err = db.ExecContext(ctx, "ALTER TABLE queen_migrations_lock DELETE WHERE lock_key = 'migration_lock'")
+	if err != nil {
+		t.Fatalf("failed to delete lock: %v", err)
+	}
+
+	// Wait for ClickHouse to process the deletion (async operation)
+	time.Sleep(2 * time.Second)
+
+	// Verify lock was deleted
+	var count int64
+	err = db.QueryRowContext(ctx,
+		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check lock count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected lock to be deleted, got count=%d", count)
+	}
+
+	// Process B acquires new lock (should succeed since A's lock expired)
+	if err := driverB.Lock(ctx, 30*time.Second); err != nil {
+		t.Fatalf("driverB.Lock() should succeed after A's lock expired: %v", err)
+	}
+
+	// Verify Process B's lock exists
+	err = db.QueryRowContext(ctx,
+		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check lock count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected Process B's lock to exist, got count=%d", count)
+	}
+
+	// Process A tries to unlock - should NOT delete Process B's lock
+	// This is the critical test: driverA.Unlock() should be graceful and not affect driverB's lock
+	if err := driverA.Unlock(ctx); err != nil {
+		t.Fatalf("driverA.Unlock() should be graceful: %v", err)
+	}
+
+	// Wait for ClickHouse to process any deletions
+	time.Sleep(1 * time.Second)
+
+	// Verify Process B's lock STILL EXISTS (critical assertion)
+	err = db.QueryRowContext(ctx,
+		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check lock count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CRITICAL: Process A unlocked Process B's lock! Expected count=1, got count=%d", count)
+	}
+
+	// Process B unlocks successfully
+	if err := driverB.Unlock(ctx); err != nil {
+		t.Fatalf("driverB.Unlock() failed: %v", err)
+	}
+
+	// Verify lock is now gone
+	time.Sleep(1 * time.Second)
+	err = db.QueryRowContext(ctx,
+		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check lock count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected lock to be deleted after driverB.Unlock(), got count=%d", count)
 	}
 }
 
@@ -509,7 +656,10 @@ func TestLock_ContextCancellation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	driver := New(db)
+	driver, err := New(db)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 
 	if err := driver.Init(context.Background()); err != nil {
 		t.Fatalf("Init() failed: %v", err)
@@ -525,7 +675,7 @@ func TestLock_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	err := driver.Lock(ctx, 5*time.Second)
+	err = driver.Lock(ctx, 5*time.Second)
 	if err == nil {
 		t.Error("expected error with cancelled context, got nil")
 	}
