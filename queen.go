@@ -453,6 +453,114 @@ func (q *Queen) Validate(ctx context.Context) error {
 	return nil
 }
 
+// DryRun returns a migration execution plan without applying migrations.
+//
+// Direction can be "up" or "down":
+//   - "up": shows pending migrations that would be applied
+//   - "down": shows applied migrations that could be rolled back
+//
+// This is useful for:
+//   - Previewing what migrations will be applied before running them
+//   - CI/CD validation and checks
+//   - Understanding the current migration state
+//
+// Example:
+//
+//	plans, err := q.DryRun(ctx, "up")
+//	for _, plan := range plans {
+//	    fmt.Printf("Will apply: %s - %s\n", plan.Version, plan.Name)
+//	    if len(plan.Warnings) > 0 {
+//	        fmt.Printf("  Warnings: %v\n", plan.Warnings)
+//	    }
+//	}
+func (q *Queen) DryRun(ctx context.Context, direction string, limit int) ([]MigrationPlan, error) {
+	if q.driver == nil {
+		return nil, ErrNoDriver
+	}
+
+	if direction != "up" && direction != "down" {
+		return nil, fmt.Errorf("invalid direction: %s (must be 'up' or 'down')", direction)
+	}
+
+	if err := q.driver.Init(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := q.loadApplied(ctx); err != nil {
+		return nil, err
+	}
+
+	var migrations []*Migration
+	if direction == "up" {
+		migrations = q.getPending()
+	} else {
+		migrations = q.getAppliedMigrations()
+	}
+
+	if limit > 0 && limit < len(migrations) {
+		migrations = migrations[:limit]
+	}
+
+	plans := make([]MigrationPlan, len(migrations))
+	for i, m := range migrations {
+		plans[i] = q.createMigrationPlan(m, direction)
+	}
+
+	return plans, nil
+}
+
+// Explain returns a detailed migration plan for a specific version.
+//
+// This provides comprehensive information about a single migration,
+// including its SQL, type, warnings, and current status.
+//
+// Example:
+//
+//	plan, err := q.Explain(ctx, "001")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Printf("Migration: %s - %s\n", plan.Version, plan.Name)
+//	fmt.Printf("Status: %s\n", plan.Status)
+//	if plan.SQL != "" {
+//	    fmt.Printf("SQL:\n%s\n", plan.SQL)
+//	}
+func (q *Queen) Explain(ctx context.Context, version string) (*MigrationPlan, error) {
+	if q.driver == nil {
+		return nil, ErrNoDriver
+	}
+
+	if err := q.driver.Init(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := q.loadApplied(ctx); err != nil {
+		return nil, err
+	}
+
+	// Find the migration
+	var migration *Migration
+	for _, m := range q.migrations {
+		if m.Version == version {
+			migration = m
+			break
+		}
+	}
+
+	if migration == nil {
+		return nil, fmt.Errorf("migration not found: %s", version)
+	}
+
+	// Determine direction based on applied status
+	direction := "up"
+	if _, applied := q.applied[version]; applied {
+		direction = "down"
+	}
+
+	plan := q.createMigrationPlan(migration, direction)
+	return &plan, nil
+}
+
 // Close releases database resources.
 func (q *Queen) Close() error {
 	if q.driver != nil {
@@ -583,4 +691,82 @@ func (q *Queen) rollbackMigration(ctx context.Context, m *Migration) error {
 	delete(q.applied, m.Version)
 
 	return nil
+}
+
+// createMigrationPlan creates a MigrationPlan from a Migration.
+func (q *Queen) createMigrationPlan(m *Migration, direction string) MigrationPlan {
+	plan := MigrationPlan{
+		Version:       m.Version,
+		Name:          m.Name,
+		Direction:     direction,
+		HasRollback:   m.HasRollback(),
+		IsDestructive: false,
+		Checksum:      m.Checksum(),
+		Warnings:      make([]string, 0),
+	}
+
+	// Determine status
+	if applied, ok := q.applied[m.Version]; ok {
+		plan.Status = "applied"
+		// Check for checksum mismatch
+		if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
+			plan.Status = "modified"
+			plan.Warnings = append(plan.Warnings, "Checksum mismatch - migration has been modified after being applied")
+		}
+	} else {
+		plan.Status = "pending"
+	}
+
+	// Determine type and SQL based on direction
+	var sql string
+	hasSQL := false
+	hasFunc := false
+
+	if direction == "up" {
+		if m.UpSQL != "" {
+			hasSQL = true
+			sql = m.UpSQL
+		}
+		if m.UpFunc != nil {
+			hasFunc = true
+		}
+	} else {
+		if m.DownSQL != "" {
+			hasSQL = true
+			sql = m.DownSQL
+		}
+		if m.DownFunc != nil {
+			hasFunc = true
+		}
+		// Check for destructive operations in down migrations
+		plan.IsDestructive = m.IsDestructive()
+	}
+
+	// Set migration type
+	if hasSQL && hasFunc {
+		plan.Type = MigrationTypeMixed
+	} else if hasSQL {
+		plan.Type = MigrationTypeSQL
+	} else {
+		plan.Type = MigrationTypeGoFunc
+	}
+
+	plan.SQL = sql
+
+	// Collect warnings
+	if !plan.HasRollback {
+		plan.Warnings = append(plan.Warnings, "No rollback defined")
+	}
+
+	if plan.Type == MigrationTypeGoFunc || plan.Type == MigrationTypeMixed {
+		if m.ManualChecksum == "" {
+			plan.Warnings = append(plan.Warnings, "Go function without manual checksum")
+		}
+	}
+
+	if plan.IsDestructive && direction == "down" {
+		plan.Warnings = append(plan.Warnings, "Destructive operation")
+	}
+
+	return plan
 }
