@@ -60,7 +60,12 @@ func testFindNextVersion(t *testing.T, setupFiles []string, expectedVersion stri
 		}
 	}
 
-	version, err := findNextVersion()
+	// Create app with default config (no .queen.yaml)
+	app := &App{
+		config: &Config{},
+	}
+
+	version, err := app.findNextVersion()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

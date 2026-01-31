@@ -142,6 +142,10 @@ type Config struct {
 
 	// SkipLock disables locking (not recommended for production). Default: false
 	SkipLock bool
+
+	// Naming configures migration version naming validation.
+	// Default: nil (no validation, for backward compatibility)
+	Naming *NamingConfig
 }
 
 // DefaultConfig returns default settings: "queen_migrations" table, 30min lock timeout.
@@ -150,6 +154,7 @@ func DefaultConfig() *Config {
 		TableName:   "queen_migrations",
 		LockTimeout: 30 * time.Minute,
 		SkipLock:    false,
+		Naming:      nil, // No validation by default (backward compatibility)
 	}
 }
 
@@ -190,6 +195,16 @@ func (q *Queen) Add(m M) error {
 	for _, existing := range q.migrations {
 		if existing.Version == m.Version {
 			return fmt.Errorf("%w: %s", ErrVersionConflict, m.Version)
+		}
+	}
+
+	// Validate naming pattern if configured
+	if q.config.Naming != nil {
+		if err := q.config.Naming.Validate(m.Version); err != nil {
+			if q.config.Naming.Enforce {
+				return fmt.Errorf("naming pattern validation failed: %w", err)
+			}
+			// TODO: log warning when Enforce is false
 		}
 	}
 
