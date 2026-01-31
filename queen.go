@@ -127,6 +127,7 @@ type Queen struct {
 	driver     Driver
 	migrations []*Migration
 	config     *Config
+	logger     Logger
 
 	// Track which migrations have been applied (cache)
 	applied map[string]*Applied
@@ -158,9 +159,44 @@ func DefaultConfig() *Config {
 	}
 }
 
-// New creates a Queen instance with default configuration.
-func New(driver Driver) *Queen {
-	return NewWithConfig(driver, DefaultConfig())
+// Option configures a Queen instance.
+type Option func(*Queen)
+
+// WithLogger sets a custom logger for the Queen instance.
+//
+// The logger interface is compatible with *slog.Logger from the standard library,
+// so you can pass slog loggers directly:
+//
+//	import "log/slog"
+//
+//	logger := slog.Default()
+//	q := queen.New(driver, queen.WithLogger(logger))
+//
+// If no logger is configured, a no-op logger is used (no logging).
+func WithLogger(logger Logger) Option {
+	return func(q *Queen) {
+		if logger != nil {
+			q.logger = logger
+		}
+	}
+}
+
+// New creates a Queen instance with default configuration and optional settings.
+//
+// Example:
+//
+//	q := queen.New(driver)
+//
+// With logger:
+//
+//	import "log/slog"
+//	q := queen.New(driver, queen.WithLogger(slog.Default()))
+func New(driver Driver, opts ...Option) *Queen {
+	q := NewWithConfig(driver, DefaultConfig())
+	for _, opt := range opts {
+		opt(q)
+	}
+	return q
 }
 
 // NewWithConfig creates a Queen instance with custom settings.
@@ -181,6 +217,7 @@ func NewWithConfig(driver Driver, config *Config) *Queen {
 		driver:     driver,
 		migrations: make([]*Migration, 0),
 		config:     config,
+		logger:     defaultLogger(),
 		applied:    make(map[string]*Applied),
 	}
 }
@@ -204,7 +241,11 @@ func (q *Queen) Add(m M) error {
 			if q.config.Naming.Enforce {
 				return fmt.Errorf("naming pattern validation failed: %w", err)
 			}
-			// TODO: log warning when Enforce is false
+			q.logger.WarnContext(context.Background(), "naming pattern validation failed",
+				"version", m.Version,
+				"name", m.Name,
+				"pattern", q.config.Naming.Pattern,
+				"error", err)
 		}
 	}
 
@@ -248,10 +289,12 @@ func (q *Queen) UpSteps(ctx context.Context, n int) error {
 		if err := q.driver.Lock(ctx, q.config.LockTimeout); err != nil {
 			return err
 		}
+		q.logger.InfoContext(ctx, "lock acquired", "table", q.config.TableName)
 		defer func() {
 			// Unlock uses background context to complete even if parent context is cancelled.
 			// Unlock errors are non-critical and safely ignored.
 			_ = q.driver.Unlock(context.Background())
+			q.logger.InfoContext(context.Background(), "lock released", "table", q.config.TableName)
 		}()
 	}
 
@@ -443,6 +486,11 @@ func (q *Queen) Validate(ctx context.Context) error {
 		for _, m := range q.migrations {
 			if applied, ok := q.applied[m.Version]; ok {
 				if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
+					q.logger.ErrorContext(ctx, "checksum mismatch detected",
+						"version", m.Version,
+						"name", m.Name,
+						"expected_checksum", applied.Checksum,
+						"actual_checksum", m.Checksum())
 					return fmt.Errorf("%w: migration %s (expected %s, got %s)",
 						ErrChecksumMismatch, m.Version, applied.Checksum, m.Checksum())
 				}
@@ -648,16 +696,34 @@ func (q *Queen) getAppliedMigrations() []*Migration {
 
 // applyMigration applies a single migration.
 func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
+	start := time.Now()
+	q.logger.InfoContext(ctx, "migration started",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "up")
+
 	// Execute migration in transaction
 	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
 		return m.executeUp(ctx, tx)
 	})
 	if err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "up",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Record in database
 	if err := q.driver.Record(ctx, m); err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "up",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
@@ -669,26 +735,56 @@ func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
 		Checksum:  m.Checksum(),
 	}
 
+	q.logger.InfoContext(ctx, "migration completed",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "up",
+		"duration_ms", time.Since(start).Milliseconds())
+
 	return nil
 }
 
 // rollbackMigration rolls back a single migration.
 func (q *Queen) rollbackMigration(ctx context.Context, m *Migration) error {
+	start := time.Now()
+	q.logger.InfoContext(ctx, "migration started",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "down")
+
 	// Execute rollback in transaction
 	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
 		return m.executeDown(ctx, tx)
 	})
 	if err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "down",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Remove from database
 	if err := q.driver.Remove(ctx, m.Version); err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "down",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Update cache
 	delete(q.applied, m.Version)
+
+	q.logger.InfoContext(ctx, "migration completed",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "down",
+		"duration_ms", time.Since(start).Milliseconds())
 
 	return nil
 }
@@ -712,6 +808,11 @@ func (q *Queen) createMigrationPlan(m *Migration, direction string) MigrationPla
 		if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
 			plan.Status = "modified"
 			plan.Warnings = append(plan.Warnings, "Checksum mismatch - migration has been modified after being applied")
+			q.logger.WarnContext(context.Background(), "checksum mismatch in migration plan",
+				"version", m.Version,
+				"name", m.Name,
+				"expected_checksum", applied.Checksum,
+				"actual_checksum", m.Checksum())
 		}
 	} else {
 		plan.Status = "pending"
