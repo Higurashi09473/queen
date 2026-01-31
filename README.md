@@ -471,6 +471,82 @@ migrate create add_posts
 # Creates: migrations/002_add_posts.go with Version: "002"
 ```
 
+### Logging
+
+Queen supports structured logging compatible with Go's `slog` package. By default, no logging is performed (noop logger).
+
+#### Basic Logging with slog
+
+```go
+import (
+    "log/slog"
+    "os"
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/postgres"
+)
+
+// Use default slog logger
+logger := slog.Default()
+q := queen.New(driver, queen.WithLogger(logger))
+
+// Or create custom logger
+handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo,
+})
+logger = slog.New(handler)
+q := queen.New(driver, queen.WithLogger(logger))
+```
+
+#### Custom Logger
+
+Implement the `queen.Logger` interface to use your own logging library:
+
+```go
+type Logger interface {
+    InfoContext(ctx context.Context, msg string, args ...any)
+    WarnContext(ctx context.Context, msg string, args ...any)
+    ErrorContext(ctx context.Context, msg string, args ...any)
+}
+
+// Example with zerolog
+type ZerologAdapter struct {
+    logger zerolog.Logger
+}
+
+func (z *ZerologAdapter) InfoContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Info().Fields(args).Msg(msg)
+}
+
+func (z *ZerologAdapter) WarnContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Warn().Fields(args).Msg(msg)
+}
+
+func (z *ZerologAdapter) ErrorContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Error().Fields(args).Msg(msg)
+}
+
+logger := &ZerologAdapter{logger: zerolog.New(os.Stdout)}
+q := queen.New(driver, queen.WithLogger(logger))
+```
+
+#### Logged Events
+
+Queen logs the following events:
+
+- **Migration lifecycle**: start, completion, errors, and duration
+- **Lock operations**: acquisition and release
+- **Warnings**: checksum mismatches, naming pattern violations
+- **Validation errors**: migration validation failures
+
+Example log output (JSON format):
+
+```json
+{"time":"2024-01-31T10:00:00Z","level":"INFO","msg":"lock acquired","table":"queen_migrations"}
+{"time":"2024-01-31T10:00:01Z","level":"INFO","msg":"migration started","version":"001","name":"create_users","direction":"up"}
+{"time":"2024-01-31T10:00:02Z","level":"INFO","msg":"migration completed","version":"001","name":"create_users","direction":"up","duration_ms":1234}
+{"time":"2024-01-31T10:00:02Z","level":"INFO","msg":"lock released","table":"queen_migrations"}
+```
+
 ## API Documentation
 
 See [pkg.go.dev](https://pkg.go.dev/github.com/honeynil/queen) for complete API documentation.
@@ -522,7 +598,7 @@ func (q *Queen) Close() error
 | **MariaDB** | ✅ Ready | 10.2+ | Named locks (`GET_LOCK`) |
 | **SQLite** | ✅ Ready | 3.8+ | Exclusive transactions |
 | **ClickHouse** | ✅ Ready | Latest | Table + TTL |
-| **CockroachDB** | 🔄 Planned | - | Advisory locks (PostgreSQL compatible) |
+| **CockroachDB** | ✅ Ready  | - | Advisory locks (PostgreSQL compatible) |
 | **MongoDB** | 🔄 Planned | - | TBD |
 | **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
 
