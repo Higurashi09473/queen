@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/honeynil/queen"
 )
 
 func TestIsValidMigrationName(t *testing.T) {
@@ -27,7 +29,7 @@ func TestIsValidMigrationName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isValidMigrationName(tt.input)
+			got := queen.IsValidMigrationName(tt.input)
 			if got != tt.want {
 				t.Errorf("isValidMigrationName(%q) = %v, want %v", tt.input, got, tt.want)
 			}

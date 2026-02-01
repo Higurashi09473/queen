@@ -7,14 +7,16 @@ import (
 
 // Common errors returned by Queen operations.
 var (
-	ErrNoMigrations      = errors.New("no migrations registered")
-	ErrVersionConflict   = errors.New("version conflict")
-	ErrMigrationNotFound = errors.New("migration not found")
-	ErrChecksumMismatch  = errors.New("checksum mismatch")
-	ErrLockTimeout       = errors.New("lock timeout")
-	ErrNoDriver          = errors.New("driver not initialized")
-	ErrInvalidMigration  = errors.New("invalid migration")
-	ErrAlreadyApplied    = errors.New("migration already applied")
+	ErrNoMigrations         = errors.New("no migrations registered")
+	ErrVersionConflict      = errors.New("version conflict")
+	ErrMigrationNotFound    = errors.New("migration not found")
+	ErrChecksumMismatch     = errors.New("checksum mismatch")
+	ErrLockTimeout          = errors.New("lock timeout")
+	ErrNoDriver             = errors.New("driver not initialized")
+	ErrInvalidMigration     = errors.New("invalid migration")
+	ErrNameTooLong          = errors.New("migration name exceeds 63 characters")
+	ErrInvalidMigrationName = errors.New("invalid migration name")
+	ErrAlreadyApplied       = errors.New("migration already applied")
 )
 
 // MigrationError wraps an error with migration context.
