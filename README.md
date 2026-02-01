@@ -61,6 +61,14 @@ go get github.com/honeynil/queen/drivers/clickhouse
 go get github.com/ClickHouse/clickhouse-go/v2
 ```
 
+#### YandexDB (YDB)
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/ydb
+go get github.com/ydb-platform/ydb-go-sdk/v3
+```
+
 ### Basic Usage
 
 #### PostgreSQL
@@ -222,6 +230,69 @@ func main() {
         Name:    "add_users_name",
         UpSQL:   `ALTER TABLE users ADD COLUMN name TEXT`,
         DownSQL: `ALTER TABLE users DROP COLUMN name`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### YandexDB (YDB)
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/ydb-platform/ydb-go-sdk/v3"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/ydb"
+)
+
+func main() {
+    // Connect to YDB with special parameters for database/sql compatibility:
+    // - go_query_mode=scripting: enables DDL+DML support
+    // - go_fake_tx=scripting: transaction emulation
+    // - go_query_bind=declare,numeric: auto-converts $1,$2 to YDB named params
+    dsn := "grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric"
+    db, _ := sql.Open("ydb", dsn)
+    defer db.Close()
+
+    // Create Queen instance
+    driver, _ := ydb.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id         Utf8,
+                email      Utf8 NOT NULL,
+                name       Utf8,
+                created_at Timestamp,
+                PRIMARY KEY (id)
+            )
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_bio",
+        UpSQL:   `ALTER TABLE users ADD COLUMN bio Utf8`,
+        DownSQL: `ALTER TABLE users DROP COLUMN bio`,
     })
 
     // Apply all pending migrations
@@ -666,6 +737,7 @@ func (q *Queen) Close() error
 | **MariaDB** | ✅ Ready | 10.2+ | Named locks (`GET_LOCK`) |
 | **SQLite** | ✅ Ready | 3.8+ | Exclusive transactions |
 | **ClickHouse** | ✅ Ready | Latest | Table + TTL |
+| **YandexDB (YDB)** | ✅ Ready | 23.3+ | Table + TTL (optimistic concurrency) |
 | **CockroachDB** | ✅ Ready  | - | Advisory locks (PostgreSQL compatible) |
 | **MongoDB** | 🔄 Planned | - | TBD |
 | **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
