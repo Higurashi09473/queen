@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/honeynil/queen"
@@ -41,7 +40,7 @@ Examples:
 			name := args[0]
 
 			// Validate name
-			if !isValidMigrationName(name) {
+			if !queen.IsValidMigrationName(name) {
 				return fmt.Errorf("invalid migration name: must contain only lowercase letters, numbers, and underscores")
 			}
 
@@ -97,12 +96,6 @@ Examples:
 	cmd.Flags().StringVar(&migrationType, "type", "sql", "Migration type: sql or go")
 
 	return cmd
-}
-
-// isValidMigrationName checks if a migration name is valid.
-func isValidMigrationName(name string) bool {
-	matched, _ := regexp.MatchString(`^[a-z0-9_]+$`, name)
-	return matched
 }
 
 // findNextVersion scans the migrations directory and returns the next version number
