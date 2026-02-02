@@ -20,7 +20,7 @@ Queen is a database migration library that lets you define migrations in code, n
 - **Natural sorting** - Smart version ordering: "1" < "2" < "10" < "100", "user_1" < "user_10"
 - **Flexible versioning** - Use sequential numbers, prefixes, or any naming scheme
 - **Type-safe** - Full Go type safety for programmatic migrations
-- **Multiple databases** - PostgreSQL, MySQL, SQLite support with extensible driver interface
+- **Multiple databases** - PostgreSQL, MySQL, SQLite, MS SQL Server support with extensible driver interface
 - **Lock protection** - Prevents concurrent migration runs
 - **Checksum validation** - Detects when applied migrations have changed
 - **CLI tool** - Built-in command-line interface for migration management
@@ -67,6 +67,14 @@ go get github.com/ClickHouse/clickhouse-go/v2
 go get github.com/honeynil/queen
 go get github.com/honeynil/queen/drivers/ydb
 go get github.com/ydb-platform/ydb-go-sdk/v3
+```
+
+#### MS SQL Server
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/mssql
+go get github.com/microsoft/go-mssqldb
 ```
 
 ### Basic Usage
@@ -293,6 +301,63 @@ func main() {
         Name:    "add_users_bio",
         UpSQL:   `ALTER TABLE users ADD COLUMN bio Utf8`,
         DownSQL: `ALTER TABLE users DROP COLUMN bio`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### MS SQL Server
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/microsoft/go-mssqldb"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/mssql"
+)
+
+func main() {
+    // Connect to SQL Server
+    db, _ := sql.Open("sqlserver", "sqlserver://user:password@localhost:1433?database=myapp")
+    defer db.Close()
+
+    // Create Queen instance
+    driver := mssql.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                email NVARCHAR(255) NOT NULL UNIQUE,
+                created_at DATETIME2 DEFAULT GETUTCDATE()
+            )
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_name",
+        UpSQL:   `ALTER TABLE users ADD name NVARCHAR(255)`,
+        DownSQL: `ALTER TABLE users DROP COLUMN name`,
     })
 
     // Apply all pending migrations
@@ -739,6 +804,7 @@ func (q *Queen) Close() error
 | **ClickHouse** | ✅ Ready | Latest | Table + TTL |
 | **YandexDB (YDB)** | ✅ Ready | 23.3+ | Table + TTL (optimistic concurrency) |
 | **CockroachDB** | ✅ Ready  | - | Advisory locks (PostgreSQL compatible) |
+| **MS SQL Server** | ✅ Ready | 2012+ | Application locks (`sp_getapplock`) |
 | **MongoDB** | 🔄 Planned | - | TBD |
 | **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
 
