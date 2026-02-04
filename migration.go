@@ -92,6 +92,25 @@ type Migration struct {
 	// Update this whenever you modify the function.
 	ManualChecksum string
 
+	// IsolationLevel sets the transaction isolation level for this migration.
+	// Default: sql.LevelDefault (uses Config.IsolationLevel or database default)
+	//
+	// This overrides the global Config.IsolationLevel for this specific migration.
+	//
+	// Use cases:
+	//   - Critical migrations requiring SERIALIZABLE isolation
+	//   - Bulk data migrations that can use READ COMMITTED for better performance
+	//   - Preventing race conditions during schema changes
+	//
+	// Example:
+	//   queen.M{
+	//       Version: "003",
+	//       Name:    "critical_update",
+	//       IsolationLevel: sql.LevelSerializable,
+	//       UpSQL:   "UPDATE users SET ...",
+	//   }
+	IsolationLevel sql.IsolationLevel
+
 	// Lazy-loaded checksum cache. sync.Once pointer prevents copylocks warning
 	// when Migration is passed by value.
 	checksumOnce *sync.Once
@@ -110,12 +129,16 @@ type M = Migration
 
 // Validate ensures Version, Name, and at least one Up method are defined.
 func (m *Migration) Validate() error {
-	if m.Version == "" {
+	if m.Version == "" || strings.Contains(m.Version, " ") || !IsValidMigrationName(m.Version){
 		return ErrInvalidMigration
 	}
 
-	if m.Name == "" {
-		return ErrInvalidMigration
+	if len(m.Name) > 63 {
+		return ErrNameTooLong
+	}
+
+	if m.Name == "" || !IsValidMigrationName(m.Name) {
+		return ErrInvalidMigrationName
 	}
 
 	// Must have at least one Up method

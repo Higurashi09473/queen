@@ -20,7 +20,7 @@ Queen is a database migration library that lets you define migrations in code, n
 - **Natural sorting** - Smart version ordering: "1" < "2" < "10" < "100", "user_1" < "user_10"
 - **Flexible versioning** - Use sequential numbers, prefixes, or any naming scheme
 - **Type-safe** - Full Go type safety for programmatic migrations
-- **Multiple databases** - PostgreSQL, MySQL, SQLite support with extensible driver interface
+- **Multiple databases** - PostgreSQL, MySQL, SQLite, MS SQL Server support with extensible driver interface
 - **Lock protection** - Prevents concurrent migration runs
 - **Checksum validation** - Detects when applied migrations have changed
 - **CLI tool** - Built-in command-line interface for migration management
@@ -59,6 +59,22 @@ go get github.com/mattn/go-sqlite3
 go get github.com/honeynil/queen
 go get github.com/honeynil/queen/drivers/clickhouse
 go get github.com/ClickHouse/clickhouse-go/v2
+```
+
+#### YandexDB (YDB)
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/ydb
+go get github.com/ydb-platform/ydb-go-sdk/v3
+```
+
+#### MS SQL Server
+
+```bash
+go get github.com/honeynil/queen
+go get github.com/honeynil/queen/drivers/mssql
+go get github.com/microsoft/go-mssqldb
 ```
 
 ### Basic Usage
@@ -221,6 +237,126 @@ func main() {
         Version: "002",
         Name:    "add_users_name",
         UpSQL:   `ALTER TABLE users ADD COLUMN name TEXT`,
+        DownSQL: `ALTER TABLE users DROP COLUMN name`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### YandexDB (YDB)
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/ydb-platform/ydb-go-sdk/v3"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/ydb"
+)
+
+func main() {
+    // Connect to YDB with special parameters for database/sql compatibility:
+    // - go_query_mode=scripting: enables DDL+DML support
+    // - go_fake_tx=scripting: transaction emulation
+    // - go_query_bind=declare,numeric: auto-converts $1,$2 to YDB named params
+    dsn := "grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric"
+    db, _ := sql.Open("ydb", dsn)
+    defer db.Close()
+
+    // Create Queen instance
+    driver, _ := ydb.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id         Utf8,
+                email      Utf8 NOT NULL,
+                name       Utf8,
+                created_at Timestamp,
+                PRIMARY KEY (id)
+            )
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_bio",
+        UpSQL:   `ALTER TABLE users ADD COLUMN bio Utf8`,
+        DownSQL: `ALTER TABLE users DROP COLUMN bio`,
+    })
+
+    // Apply all pending migrations
+    ctx := context.Background()
+    if err := q.Up(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    log.Println("Migrations applied successfully!")
+}
+```
+
+#### MS SQL Server
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    _ "github.com/microsoft/go-mssqldb"
+
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/mssql"
+)
+
+func main() {
+    // Connect to SQL Server
+    db, _ := sql.Open("sqlserver", "sqlserver://user:password@localhost:1433?database=myapp")
+    defer db.Close()
+
+    // Create Queen instance
+    driver := mssql.New(db)
+    q := queen.New(driver)
+    defer q.Close()
+
+    // Register migrations
+    q.MustAdd(queen.M{
+        Version: "001",
+        Name:    "create_users_table",
+        UpSQL: `
+            CREATE TABLE users (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                email NVARCHAR(255) NOT NULL UNIQUE,
+                created_at DATETIME2 DEFAULT GETUTCDATE()
+            )
+        `,
+        DownSQL: `DROP TABLE users`,
+    })
+
+    q.MustAdd(queen.M{
+        Version: "002",
+        Name:    "add_users_name",
+        UpSQL:   `ALTER TABLE users ADD name NVARCHAR(255)`,
         DownSQL: `ALTER TABLE users DROP COLUMN name`,
     })
 
@@ -399,6 +535,222 @@ config := &queen.Config{
 q := queen.NewWithConfig(driver, config)
 ```
 
+### Naming Pattern Enforcement
+
+Queen can enforce naming conventions to prevent migration versioning mistakes. This is especially useful for teams to maintain consistency.
+
+#### Sequential Padded (Recommended)
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSequentialPadded,
+        Padding: 3,       // Generates: 001, 002, 003, ...
+        Enforce: true,    // Reject non-conforming versions
+    },
+}
+
+q := queen.NewWithConfig(driver, config)
+
+q.MustAdd(queen.M{Version: "001", Name: "create_users"})  // ✅ OK
+q.MustAdd(queen.M{Version: "002", Name: "add_email"})     // ✅ OK
+q.MustAdd(queen.M{Version: "1", Name: "invalid"})         // ❌ Error: wrong format
+```
+
+#### Sequential
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSequential, // Generates: 1, 2, 3, ...
+        Enforce: true,
+    },
+}
+```
+
+#### Semantic Versioning
+
+```go
+config := &queen.Config{
+    Naming: &queen.NamingConfig{
+        Pattern: queen.NamingPatternSemver, // Enforces: 1.0.0, 1.1.0, 2.0.0
+        Enforce: true,
+    },
+}
+
+q.MustAdd(queen.M{Version: "1.0.0", Name: "initial"})  // ✅ OK
+q.MustAdd(queen.M{Version: "1.1.0", Name: "feature"})  // ✅ OK
+```
+
+#### CLI Integration
+
+When using the CLI with `.queen.yaml`, the naming pattern is automatically applied:
+
+```yaml
+# .queen.yaml
+naming:
+  pattern: sequential-padded
+  padding: 3
+  enforce: true
+
+development:
+  driver: postgres
+  dsn: postgres://localhost/dev
+```
+
+```bash
+# CLI automatically uses the pattern
+migrate create add_users
+# Creates: migrations/001_add_users.go with Version: "001"
+
+migrate create add_posts
+# Creates: migrations/002_add_posts.go with Version: "002"
+```
+
+### Logging
+
+Queen supports structured logging compatible with Go's `slog` package. By default, no logging is performed (noop logger).
+
+#### Basic Logging with slog
+
+```go
+import (
+    "log/slog"
+    "os"
+    "github.com/honeynil/queen"
+    "github.com/honeynil/queen/drivers/postgres"
+)
+
+// Use default slog logger
+logger := slog.Default()
+q := queen.New(driver, queen.WithLogger(logger))
+
+// Or create custom logger
+handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo,
+})
+logger = slog.New(handler)
+q := queen.New(driver, queen.WithLogger(logger))
+```
+
+#### Custom Logger
+
+Implement the `queen.Logger` interface to use your own logging library:
+
+```go
+type Logger interface {
+    InfoContext(ctx context.Context, msg string, args ...any)
+    WarnContext(ctx context.Context, msg string, args ...any)
+    ErrorContext(ctx context.Context, msg string, args ...any)
+}
+
+// Example with zerolog
+type ZerologAdapter struct {
+    logger zerolog.Logger
+}
+
+func (z *ZerologAdapter) InfoContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Info().Fields(args).Msg(msg)
+}
+
+func (z *ZerologAdapter) WarnContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Warn().Fields(args).Msg(msg)
+}
+
+func (z *ZerologAdapter) ErrorContext(ctx context.Context, msg string, args ...any) {
+    z.logger.Error().Fields(args).Msg(msg)
+}
+
+logger := &ZerologAdapter{logger: zerolog.New(os.Stdout)}
+q := queen.New(driver, queen.WithLogger(logger))
+```
+
+#### Logged Events
+
+Queen logs the following events:
+
+- **Migration lifecycle**: start, completion, errors, and duration
+- **Lock operations**: acquisition and release
+- **Warnings**: checksum mismatches, naming pattern violations
+- **Validation errors**: migration validation failures
+
+Example log output (JSON format):
+
+```json
+{"time":"2024-01-31T10:00:00Z","level":"INFO","msg":"lock acquired","table":"queen_migrations"}
+{"time":"2024-01-31T10:00:01Z","level":"INFO","msg":"migration started","version":"001","name":"create_users","direction":"up"}
+{"time":"2024-01-31T10:00:02Z","level":"INFO","msg":"migration completed","version":"001","name":"create_users","direction":"up","duration_ms":1234}
+{"time":"2024-01-31T10:00:02Z","level":"INFO","msg":"lock released","table":"queen_migrations"}
+```
+
+### Transaction Isolation Levels
+
+Control transaction isolation levels for migrations to prevent race conditions and optimize performance.
+
+#### Global Configuration
+
+Set a default isolation level for all migrations:
+
+```go
+import "database/sql"
+
+config := &queen.Config{
+    IsolationLevel: sql.LevelSerializable, // Strongest isolation
+}
+q := queen.NewWithConfig(driver, config)
+```
+
+#### Per-Migration Configuration
+
+Override the global setting for specific migrations:
+
+```go
+q.MustAdd(queen.M{
+    Version:        "003",
+    Name:           "critical_update",
+    IsolationLevel: sql.LevelSerializable, // Override for this migration
+    UpSQL:          "UPDATE accounts SET balance = balance - 100 WHERE id = 1",
+    DownSQL:        "UPDATE accounts SET balance = balance + 100 WHERE id = 1",
+})
+```
+
+#### Isolation Levels
+
+| Level | Description | PostgreSQL | MySQL | SQLite |
+|-------|-------------|------------|-------|--------|
+| `LevelDefault` | Use database default | ✅ READ COMMITTED | ✅ REPEATABLE READ | ✅ SERIALIZABLE |
+| `LevelReadUncommitted` | Allow dirty reads | ✅ | ✅ | ❌ |
+| `LevelReadCommitted` | Prevent dirty reads | ✅ (default) | ✅ | ❌ |
+| `LevelRepeatableRead` | Prevent non-repeatable reads | ✅ | ✅ (default) | ❌ |
+| `LevelSerializable` | Full isolation | ✅ | ✅ | ✅ (only option) |
+
+#### Use Cases
+
+**High Concurrency (READ COMMITTED):**
+```go
+// Fast bulk updates - allows other transactions to proceed
+q.MustAdd(queen.M{
+    Version:        "004",
+    Name:           "bulk_data_migration",
+    IsolationLevel: sql.LevelReadCommitted,
+    UpSQL:          "UPDATE users SET migrated = true WHERE created_at < '2024-01-01'",
+})
+```
+
+**Critical Operations (SERIALIZABLE):**
+```go
+// Prevents race conditions in financial operations
+q.MustAdd(queen.M{
+    Version:        "005",
+    Name:           "transfer_funds",
+    IsolationLevel: sql.LevelSerializable,
+    UpFunc: func(ctx context.Context, tx *sql.Tx) error {
+        // Complex multi-table update requiring full isolation
+        return nil
+    },
+})
+```
+
 ## API Documentation
 
 See [pkg.go.dev](https://pkg.go.dev/github.com/honeynil/queen) for complete API documentation.
@@ -450,7 +802,9 @@ func (q *Queen) Close() error
 | **MariaDB** | ✅ Ready | 10.2+ | Named locks (`GET_LOCK`) |
 | **SQLite** | ✅ Ready | 3.8+ | Exclusive transactions |
 | **ClickHouse** | ✅ Ready | Latest | Table + TTL |
-| **CockroachDB** | 🔄 Planned | - | Advisory locks (PostgreSQL compatible) |
+| **YandexDB (YDB)** | ✅ Ready | 23.3+ | Table + TTL (optimistic concurrency) |
+| **CockroachDB** | ✅ Ready  | - | Advisory locks (PostgreSQL compatible) |
+| **MS SQL Server** | ✅ Ready | 2012+ | Application locks (`sp_getapplock`) |
 | **MongoDB** | 🔄 Planned | - | TBD |
 | **Oracle** | 🔄 Planned | 11g+ | `DBMS_LOCK` |
 
@@ -482,19 +836,36 @@ Then use it:
 # Build
 go build -o migrate cmd/migrate/main.go
 
-# Configure
+# Configure via environment variables
 export QUEEN_DRIVER=postgres
 export QUEEN_DSN="postgres://localhost/myapp?sslmode=disable"
 
-# Use
-./migrate up              # Apply all pending migrations
-./migrate down            # Rollback last migration
-./migrate status          # Show migration status
-./migrate create add_foo  # Create new migration
-./migrate validate        # Validate checksums
-```
+# Or create .queen.yaml
+cat > .queen.yaml <<EOF
+naming:
+  pattern: sequential-padded
+  padding: 3
+  enforce: true
 
-See [CLI documentation](docs/CLI.md) for full details on commands, flags, and configuration.
+development:
+  driver: postgres
+  dsn: postgres://localhost/myapp_dev?sslmode=disable
+
+production:
+  driver: postgres
+  dsn: postgres://localhost/myapp?sslmode=disable
+  require_confirmation: true
+  require_explicit_unlock: true
+EOF
+
+# Use
+./migrate up                       # Apply all pending migrations
+./migrate down                     # Rollback last migration
+./migrate status                   # Show migration status
+./migrate create add_foo           # Create new migration (auto-numbered: 001, 002, ...)
+./migrate validate                 # Validate checksums
+./migrate --env production status  # Use production environment from config
+```
 
 ## License
 

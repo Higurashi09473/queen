@@ -61,10 +61,20 @@ type Driver interface {
 	// This should be called in a defer statement after acquiring the lock.
 	Unlock(ctx context.Context) error
 
-	// Exec executes a function within a transaction.
+	// Exec executes a function within a transaction with the specified isolation level.
 	// If the function returns an error, the transaction is rolled back.
 	// Otherwise, the transaction is committed.
-	Exec(ctx context.Context, fn func(*sql.Tx) error) error
+	//
+	// The isolationLevel parameter specifies the transaction isolation level:
+	//   - sql.LevelDefault: use database default isolation level
+	//   - sql.LevelReadUncommitted: allow dirty reads
+	//   - sql.LevelReadCommitted: prevent dirty reads
+	//   - sql.LevelRepeatableRead: prevent non-repeatable reads
+	//   - sql.LevelSerializable: full isolation
+	//
+	// Note: Not all databases support all isolation levels. The driver should
+	// validate compatibility and return an error if unsupported.
+	Exec(ctx context.Context, isolationLevel sql.IsolationLevel, fn func(*sql.Tx) error) error
 
 	// Close closes the database connection.
 	Close() error

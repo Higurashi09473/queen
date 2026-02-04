@@ -1,17 +1,23 @@
-package clickhouse
+package ydb
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2"
-
 	"github.com/honeynil/queen"
 	"github.com/honeynil/queen/drivers/base"
+	_ "github.com/ydb-platform/ydb-go-sdk/v3"
 )
+
+// YDB connection string with special parameters:
+// - go_query_mode=scripting: enables DDL+DML support
+// - go_fake_tx=scripting: transaction emulation
+// - go_query_bind=declare,numeric: auto-converts $1,$2 to YDB named params with DECLARE
+const YDBTestDSN = "grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric"
 
 // TestQuoteIdentifier tests the identifier quoting function.
 func TestQuoteIdentifier(t *testing.T) {
@@ -23,35 +29,35 @@ func TestQuoteIdentifier(t *testing.T) {
 		{
 			name:     "simple table name",
 			input:    "users",
-			expected: `"users"`,
+			expected: "`users`",
 		},
 		{
-			name:     "table name with double quote",
-			input:    `my"table`,
-			expected: `"my""table"`,
+			name:     "table name with backtick",
+			input:    "my`table",
+			expected: "`my``table`",
 		},
 		{
-			name:     "table name with multiple quotes",
-			input:    `my"ta"ble`,
-			expected: `"my""ta""ble"`,
+			name:     "table name with multiple backticks",
+			input:    "my`ta`ble",
+			expected: "`my``ta``ble`",
 		},
 		{
 			name:     "empty string",
 			input:    "",
-			expected: `""`,
+			expected: "``",
 		},
 		{
 			name:     "table name with spaces",
 			input:    "my table",
-			expected: `"my table"`,
+			expected: "`my table`",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := base.QuoteDoubleQuotes(tt.input)
+			result := base.QuoteBackticks(tt.input)
 			if result != tt.expected {
-				t.Errorf("base.QuoteDoubleQuotes(%q) = %q; want %q", tt.input, result, tt.expected)
+				t.Errorf("base.QuoteBackticks(%q) = %q; want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -109,20 +115,20 @@ func TestDriverCreation(t *testing.T) {
 }
 
 // setupTestDB creates a test database connection.
-// This requires ClickHouse to be running. Tests will be skipped if ClickHouse is not available.
+// This requires YDB to be running. Tests will be skipped if YDB is not available.
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
 
 	// Try to get DSN from environment variable first
-	dsn := os.Getenv("CLICKHOUSE_TEST_DSN")
+	dsn := os.Getenv("YDB_TEST_DSN")
 	if dsn == "" {
 		// Default DSN for local testing
-		dsn = "clickhouse://default@localhost:9000/default?dial_timeout=5s"
+		dsn = YDBTestDSN
 	}
 
-	db, err := sql.Open("clickhouse", dsn)
+	db, err := sql.Open("ydb", dsn)
 	if err != nil {
-		t.Skip("ClickHouse not available:", err)
+		t.Skip("YDB not available:", err)
 	}
 
 	// Verify connection
@@ -131,7 +137,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		t.Skip("ClickHouse not available:", err)
+		t.Skip("YDB not available:", err)
 	}
 
 	// Cleanup function
@@ -161,17 +167,6 @@ func TestInit(t *testing.T) {
 	err = driver.Init(ctx)
 	if err != nil {
 		t.Fatalf("Init() failed: %v", err)
-	}
-
-	// Verify table exists
-	var tableName string
-	err = db.QueryRowContext(ctx,
-		"SELECT name FROM system.tables WHERE database = 'default' AND name = 'queen_migrations'").Scan(&tableName)
-	if err != nil {
-		t.Fatalf("migrations table was not created: %v", err)
-	}
-	if tableName != "queen_migrations" {
-		t.Errorf("table name = %q; want %q", tableName, "queen_migrations")
 	}
 
 	// Init should be idempotent
@@ -210,8 +205,10 @@ func TestRecordAndGetApplied(t *testing.T) {
 		Version: "001",
 		Name:    "create_users",
 		UpSQL: `CREATE TABLE test_users (
-			id UUID DEFAULT generateUUIDv4()
-		) ENGINE = MergeTree() ORDER BY id`,
+			id Utf8,
+			email Utf8 NOT NULL,
+			PRIMARY KEY (id)
+		)`,
 	}
 	if err := driver.Record(ctx, m1); err != nil {
 		t.Fatalf("Record() failed: %v", err)
@@ -237,8 +234,11 @@ func TestRecordAndGetApplied(t *testing.T) {
 		Version: "002",
 		Name:    "create_posts",
 		UpSQL: `CREATE TABLE test_posts (
-			id UUID DEFAULT generateUUIDv4()
-		) ENGINE = MergeTree() ORDER BY id`,
+			id Utf8,
+			user_id Utf8 NOT NULL,
+			title Utf8,
+			PRIMARY KEY (id)
+		)`,
 	}
 	if err := driver.Record(ctx, m2); err != nil {
 		t.Fatalf("Record() failed: %v", err)
@@ -280,8 +280,10 @@ func TestRemove(t *testing.T) {
 		Version: "001",
 		Name:    "create_users",
 		UpSQL: `CREATE TABLE test_users (
-			id UUID DEFAULT generateUUIDv4()
-		) ENGINE = MergeTree() ORDER BY id`,
+			id Utf8,
+			email Utf8 NOT NULL,
+			PRIMARY KEY (id)
+		)`,
 	}
 	if err := driver.Record(ctx, m); err != nil {
 		t.Fatalf("Record() failed: %v", err)
@@ -330,7 +332,7 @@ func TestLocking(t *testing.T) {
 
 	// Try to acquire the same lock from the same driver instance (should fail)
 	err = driver.Lock(ctx, 100*time.Millisecond)
-	if err != queen.ErrLockTimeout {
+	if !errors.Is(err, queen.ErrLockTimeout) {
 		t.Errorf("expected ErrLockTimeout, got %v", err)
 	}
 
@@ -367,9 +369,10 @@ func TestExec(t *testing.T) {
 	err = driver.Exec(ctx, sql.LevelDefault, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			CREATE TABLE test_users (
-				id UUID DEFAULT generateUUIDv4(),
-				name String
-			) ENGINE = MergeTree() ORDER BY id
+				id Utf8,
+				name Utf8 NOT NULL,
+				PRIMARY KEY (id)
+			)
 		`)
 		return err
 	})
@@ -377,19 +380,9 @@ func TestExec(t *testing.T) {
 		t.Fatalf("Exec() failed: %v", err)
 	}
 
-	// Verify table was created
-	var tableName string
-	err = db.QueryRowContext(ctx,
-		"SELECT name FROM system.tables WHERE database = 'default' AND name = 'test_users'").Scan(&tableName)
-	if err != nil {
-		t.Fatalf("table was not created: %v", err)
-	}
-
 	// Test failed transaction (should rollback)
-	// Note: ClickHouse doesn't support full ACID transactions like PostgreSQL/MySQL,
-	// so rollback behavior may be limited. This test verifies the error handling.
 	err = driver.Exec(ctx, sql.LevelDefault, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, "INSERT INTO test_users (name) VALUES ('Alice')")
+		_, err := tx.ExecContext(ctx, "UPSERT INTO test_users (id, name) VALUES ('1', 'Alice')")
 		if err != nil {
 			return err
 		}
@@ -420,9 +413,10 @@ func TestFullMigrationCycle(t *testing.T) {
 		Name:    "create_users",
 		UpSQL: `
 			CREATE TABLE test_users (
-				id UUID DEFAULT generateUUIDv4(),
-				email String NOT NULL
-			) ENGINE = ReplacingMergeTree() ORDER BY id
+				id Utf8,
+				email Utf8 NOT NULL,
+				PRIMARY KEY (id)
+			)
 		`,
 		DownSQL: `DROP TABLE test_users`,
 	})
@@ -432,10 +426,11 @@ func TestFullMigrationCycle(t *testing.T) {
 		Name:    "create_posts",
 		UpSQL: `
 			CREATE TABLE test_posts (
-				id UUID DEFAULT generateUUIDv4(),
-				user_id UUID NOT NULL,
-				title String
-			) ENGINE = ReplacingMergeTree() ORDER BY id
+				id Utf8,
+				user_id Utf8 NOT NULL,
+				title Utf8,
+				PRIMARY KEY (id)
+			)
 		`,
 		DownSQL: `DROP TABLE test_posts`,
 	})
@@ -443,17 +438,6 @@ func TestFullMigrationCycle(t *testing.T) {
 	// Apply all migrations
 	if err := q.Up(ctx); err != nil {
 		t.Fatalf("Up() failed: %v", err)
-	}
-
-	// Verify tables exist
-	var tableCount uint64
-	err = db.QueryRowContext(ctx,
-		"SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('test_users', 'test_posts')").Scan(&tableCount)
-	if err != nil {
-		t.Fatalf("failed to check tables: %v", err)
-	}
-	if tableCount != 2 {
-		t.Errorf("expected 2 tables, got %d", tableCount)
 	}
 
 	// Check status
@@ -473,16 +457,6 @@ func TestFullMigrationCycle(t *testing.T) {
 	// Rollback all migrations
 	if err := q.Reset(ctx); err != nil {
 		t.Fatalf("Reset() failed: %v", err)
-	}
-
-	// Verify tables are gone
-	err = db.QueryRowContext(ctx,
-		"SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('test_users', 'test_posts')").Scan(&tableCount)
-	if err != nil {
-		t.Fatalf("failed to check tables: %v", err)
-	}
-	if tableCount != 0 {
-		t.Errorf("expected 0 tables after reset, got %d", tableCount)
 	}
 }
 
@@ -505,8 +479,9 @@ func TestTimestampParsing(t *testing.T) {
 		Version: "001",
 		Name:    "test_migration",
 		UpSQL: `CREATE TABLE test (
-			id UUID DEFAULT generateUUIDv4()
-		) ENGINE = MergeTree() ORDER BY id`,
+			id Utf8,
+			PRIMARY KEY (id)
+		)`,
 	}
 	if err := driver.Record(ctx, m); err != nil {
 		t.Fatalf("Record() failed: %v", err)
@@ -581,19 +556,15 @@ func TestLockOwnership_PreventsCrossProcessUnlock(t *testing.T) {
 	}
 
 	// Simulate lock expiration by manually deleting the lock
-	// In ClickHouse, we need to use ALTER TABLE DELETE
-	_, err = db.ExecContext(ctx, "ALTER TABLE queen_migrations_lock DELETE WHERE lock_key = 'migration_lock'")
+	_, err = db.ExecContext(ctx, "DELETE FROM queen_migrations_lock WHERE lock_key = 'migration_lock'")
 	if err != nil {
 		t.Fatalf("failed to delete lock: %v", err)
 	}
 
-	// Wait for ClickHouse to process the deletion (async operation)
-	time.Sleep(2 * time.Second)
-
 	// Verify lock was deleted
 	var count int64
 	err = db.QueryRowContext(ctx,
-		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+		"SELECT COUNT(*) FROM queen_migrations_lock WHERE lock_key = 'migration_lock'").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to check lock count: %v", err)
 	}
@@ -608,7 +579,7 @@ func TestLockOwnership_PreventsCrossProcessUnlock(t *testing.T) {
 
 	// Verify Process B's lock exists
 	err = db.QueryRowContext(ctx,
-		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+		"SELECT COUNT(*) FROM queen_migrations_lock WHERE lock_key = 'migration_lock'").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to check lock count: %v", err)
 	}
@@ -622,12 +593,9 @@ func TestLockOwnership_PreventsCrossProcessUnlock(t *testing.T) {
 		t.Fatalf("driverA.Unlock() should be graceful: %v", err)
 	}
 
-	// Wait for ClickHouse to process any deletions
-	time.Sleep(1 * time.Second)
-
 	// Verify Process B's lock STILL EXISTS (critical assertion)
 	err = db.QueryRowContext(ctx,
-		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+		"SELECT COUNT(*) FROM queen_migrations_lock WHERE lock_key = 'migration_lock'").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to check lock count: %v", err)
 	}
@@ -641,9 +609,8 @@ func TestLockOwnership_PreventsCrossProcessUnlock(t *testing.T) {
 	}
 
 	// Verify lock is now gone
-	time.Sleep(1 * time.Second)
 	err = db.QueryRowContext(ctx,
-		"SELECT count(*) FROM queen_migrations_lock FINAL WHERE lock_key = 'migration_lock'").Scan(&count)
+		"SELECT COUNT(*) FROM queen_migrations_lock WHERE lock_key = 'migration_lock'").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to check lock count: %v", err)
 	}

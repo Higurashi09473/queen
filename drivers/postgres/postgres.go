@@ -15,6 +15,7 @@ import (
 type Driver struct {
 	base.Driver
 	lockID int64
+	lockConn *sql.Conn
 }
 
 // New creates a new PostgreSQL driver.
@@ -59,30 +60,39 @@ func (d *Driver) Init(ctx context.Context) error {
 // PostgreSQL advisory locks are automatically released when the connection closes
 // or when explicitly unlocked.
 func (d *Driver) Lock(ctx context.Context, timeout time.Duration) error {
-	// Set lock timeout
-	_, err := d.DB.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = '%dms'", timeout.Milliseconds()))
+	conn, err := d.DB.Conn(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Try to acquire advisory lock
-	var acquired bool
-	err = d.DB.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", d.lockID).Scan(&acquired)
+	lockCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	_, err = conn.ExecContext(lockCtx, "SELECT pg_advisory_lock($1)", d.lockID)
 	if err != nil {
+		conn.Close()
+		if lockCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%w: failed to acquire advisory lock '%d' for table '%s'",
+				queen.ErrLockTimeout, d.lockID, d.TableName)
+		}
 		return err
 	}
 
-	if !acquired {
-		return fmt.Errorf("%w: failed to acquire advisory lock '%d' for table '%s'",
-			queen.ErrLockTimeout, d.lockID, d.TableName)
-	}
-
+	d.lockConn = conn
 	return nil
 }
 
 // Unlock releases the advisory lock.
 func (d *Driver) Unlock(ctx context.Context) error {
-	_, err := d.DB.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", d.lockID)
+	if d.lockConn == nil {
+		return nil
+	}
+	defer func() {
+		d.lockConn.Close()
+		d.lockConn = nil
+	}()
+
+	_, err := d.lockConn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", d.lockID)
 	if err != nil {
 		return fmt.Errorf("failed to release advisory lock '%d' for table '%s': %w",
 			d.lockID, d.TableName, err)

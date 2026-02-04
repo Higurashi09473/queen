@@ -322,7 +322,7 @@ func TestIntegrationExec(t *testing.T) {
 	}
 
 	// Test successful transaction
-	err := driver.Exec(ctx, func(tx *sql.Tx) error {
+	err := driver.Exec(ctx, sql.LevelDefault, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			CREATE TABLE test_users (
 				id INT AUTO_INCREMENT PRIMARY KEY,
@@ -343,7 +343,7 @@ func TestIntegrationExec(t *testing.T) {
 	}
 
 	// Test failed transaction (should rollback)
-	err = driver.Exec(ctx, func(tx *sql.Tx) error {
+	err = driver.Exec(ctx, sql.LevelDefault, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO test_users (name) VALUES ('Alice')")
 		if err != nil {
 			return err

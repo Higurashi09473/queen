@@ -3,10 +3,9 @@ package cli
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 
+	"github.com/honeynil/queen"
 	"github.com/spf13/cobra"
 )
 
@@ -41,12 +40,20 @@ Examples:
 			name := args[0]
 
 			// Validate name
-			if !isValidMigrationName(name) {
+			if !queen.IsValidMigrationName(name) {
 				return fmt.Errorf("invalid migration name: must contain only lowercase letters, numbers, and underscores")
 			}
 
+			// Load config file to get naming pattern
+			if err := app.loadConfigFile(); err != nil {
+				// If config doesn't exist, use default pattern
+				if !os.IsNotExist(err) && err.Error() != "config file not found: .queen.yaml (use --use-config only when config file exists)" {
+					return fmt.Errorf("failed to load config: %w", err)
+				}
+			}
+
 			// Determine next version
-			nextVersion, err := findNextVersion()
+			nextVersion, err := app.findNextVersion()
 			if err != nil {
 				return err
 			}
@@ -91,24 +98,60 @@ Examples:
 	return cmd
 }
 
-// isValidMigrationName checks if a migration name is valid.
-func isValidMigrationName(name string) bool {
-	matched, _ := regexp.MatchString(`^[a-z0-9_]+$`, name)
-	return matched
+// findNextVersion scans the migrations directory and returns the next version number
+// based on the naming pattern from config.
+func (app *App) findNextVersion() (string, error) {
+	// Get naming config
+	namingConfig := app.getNamingConfig()
+
+	// If no naming config, use default sequential-padded with padding 3
+	if namingConfig == nil {
+		namingConfig = &queen.NamingConfig{
+			Pattern: queen.NamingPatternSequentialPadded,
+			Padding: 3,
+			Enforce: true,
+		}
+	}
+
+	// Scan existing migrations
+	existingVersions, err := app.getExistingVersions()
+	if err != nil {
+		return "", err
+	}
+
+	// If no existing migrations, return first version
+	if len(existingVersions) == 0 {
+		switch namingConfig.Pattern {
+		case queen.NamingPatternSequential:
+			return "1", nil
+		case queen.NamingPatternSequentialPadded:
+			padding := namingConfig.Padding
+			if padding <= 0 {
+				padding = 3
+			}
+			return fmt.Sprintf("%0*d", padding, 1), nil
+		case queen.NamingPatternSemver:
+			return "", fmt.Errorf("semver pattern requires manual version specification, use --version flag")
+		default:
+			return "", fmt.Errorf("unknown naming pattern: %s", namingConfig.Pattern)
+		}
+	}
+
+	// Use naming config to find next version
+	return namingConfig.FindNextVersion(existingVersions)
 }
 
-// findNextVersion scans the migrations directory and returns the next version number.
-func findNextVersion() (string, error) {
+// getExistingVersions scans the migrations directory and returns all existing version strings.
+func (app *App) getExistingVersions() ([]string, error) {
 	entries, err := os.ReadDir("migrations")
 	if err != nil {
 		if os.IsNotExist(err) {
-			// No migrations directory yet, start with 001
-			return "001", nil
+			return []string{}, nil
 		}
-		return "", fmt.Errorf("failed to read migrations directory: %w", err)
+		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
 	}
 
-	maxVersion := 0
+	var versions []string
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -126,18 +169,10 @@ func findNextVersion() (string, error) {
 			continue
 		}
 
-		version, err := strconv.Atoi(parts[0])
-		if err != nil {
-			continue
-		}
-
-		if version > maxVersion {
-			maxVersion = version
-		}
+		versions = append(versions, parts[0])
 	}
 
-	nextVersion := maxVersion + 1
-	return fmt.Sprintf("%03d", nextVersion), nil
+	return versions, nil
 }
 
 // migrationVariableName generates a Go variable name from version and name.

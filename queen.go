@@ -127,6 +127,7 @@ type Queen struct {
 	driver     Driver
 	migrations []*Migration
 	config     *Config
+	logger     Logger
 
 	// Track which migrations have been applied (cache)
 	applied map[string]*Applied
@@ -142,6 +143,23 @@ type Config struct {
 
 	// SkipLock disables locking (not recommended for production). Default: false
 	SkipLock bool
+
+	// Naming configures migration version naming validation.
+	// Default: nil (no validation, for backward compatibility)
+	Naming *NamingConfig
+
+	// IsolationLevel sets the default transaction isolation level for all migrations.
+	// Default: sql.LevelDefault (uses database default)
+	//
+	// Supported levels:
+	//   - sql.LevelDefault: use database default
+	//   - sql.LevelReadUncommitted: allow dirty reads
+	//   - sql.LevelReadCommitted: prevent dirty reads (PostgreSQL default)
+	//   - sql.LevelRepeatableRead: prevent non-repeatable reads (MySQL default)
+	//   - sql.LevelSerializable: full isolation (SQLite default)
+	//
+	// Individual migrations can override this with their own IsolationLevel.
+	IsolationLevel sql.IsolationLevel
 }
 
 // DefaultConfig returns default settings: "queen_migrations" table, 30min lock timeout.
@@ -150,12 +168,48 @@ func DefaultConfig() *Config {
 		TableName:   "queen_migrations",
 		LockTimeout: 30 * time.Minute,
 		SkipLock:    false,
+		Naming:      nil, // No validation by default (backward compatibility)
 	}
 }
 
-// New creates a Queen instance with default configuration.
-func New(driver Driver) *Queen {
-	return NewWithConfig(driver, DefaultConfig())
+// Option configures a Queen instance.
+type Option func(*Queen)
+
+// WithLogger sets a custom logger for the Queen instance.
+//
+// The logger interface is compatible with *slog.Logger from the standard library,
+// so you can pass slog loggers directly:
+//
+//	import "log/slog"
+//
+//	logger := slog.Default()
+//	q := queen.New(driver, queen.WithLogger(logger))
+//
+// If no logger is configured, a no-op logger is used (no logging).
+func WithLogger(logger Logger) Option {
+	return func(q *Queen) {
+		if logger != nil {
+			q.logger = logger
+		}
+	}
+}
+
+// New creates a Queen instance with default configuration and optional settings.
+//
+// Example:
+//
+//	q := queen.New(driver)
+//
+// With logger:
+//
+//	import "log/slog"
+//	q := queen.New(driver, queen.WithLogger(slog.Default()))
+func New(driver Driver, opts ...Option) *Queen {
+	q := NewWithConfig(driver, DefaultConfig())
+	for _, opt := range opts {
+		opt(q)
+	}
+	return q
 }
 
 // NewWithConfig creates a Queen instance with custom settings.
@@ -176,6 +230,7 @@ func NewWithConfig(driver Driver, config *Config) *Queen {
 		driver:     driver,
 		migrations: make([]*Migration, 0),
 		config:     config,
+		logger:     defaultLogger(),
 		applied:    make(map[string]*Applied),
 	}
 }
@@ -190,6 +245,20 @@ func (q *Queen) Add(m M) error {
 	for _, existing := range q.migrations {
 		if existing.Version == m.Version {
 			return fmt.Errorf("%w: %s", ErrVersionConflict, m.Version)
+		}
+	}
+
+	// Validate naming pattern if configured
+	if q.config.Naming != nil {
+		if err := q.config.Naming.Validate(m.Version); err != nil {
+			if q.config.Naming.Enforce {
+				return fmt.Errorf("naming pattern validation failed: %w", err)
+			}
+			q.logger.WarnContext(context.Background(), "naming pattern validation failed",
+				"version", m.Version,
+				"name", m.Name,
+				"pattern", q.config.Naming.Pattern,
+				"error", err)
 		}
 	}
 
@@ -233,10 +302,12 @@ func (q *Queen) UpSteps(ctx context.Context, n int) error {
 		if err := q.driver.Lock(ctx, q.config.LockTimeout); err != nil {
 			return err
 		}
+		q.logger.InfoContext(ctx, "lock acquired", "table", q.config.TableName)
 		defer func() {
 			// Unlock uses background context to complete even if parent context is cancelled.
 			// Unlock errors are non-critical and safely ignored.
 			_ = q.driver.Unlock(context.Background())
+			q.logger.InfoContext(context.Background(), "lock released", "table", q.config.TableName)
 		}()
 	}
 
@@ -428,6 +499,11 @@ func (q *Queen) Validate(ctx context.Context) error {
 		for _, m := range q.migrations {
 			if applied, ok := q.applied[m.Version]; ok {
 				if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
+					q.logger.ErrorContext(ctx, "checksum mismatch detected",
+						"version", m.Version,
+						"name", m.Name,
+						"expected_checksum", applied.Checksum,
+						"actual_checksum", m.Checksum())
 					return fmt.Errorf("%w: migration %s (expected %s, got %s)",
 						ErrChecksumMismatch, m.Version, applied.Checksum, m.Checksum())
 				}
@@ -436,6 +512,114 @@ func (q *Queen) Validate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// DryRun returns a migration execution plan without applying migrations.
+//
+// Direction can be "up" or "down":
+//   - "up": shows pending migrations that would be applied
+//   - "down": shows applied migrations that could be rolled back
+//
+// This is useful for:
+//   - Previewing what migrations will be applied before running them
+//   - CI/CD validation and checks
+//   - Understanding the current migration state
+//
+// Example:
+//
+//	plans, err := q.DryRun(ctx, "up")
+//	for _, plan := range plans {
+//	    fmt.Printf("Will apply: %s - %s\n", plan.Version, plan.Name)
+//	    if len(plan.Warnings) > 0 {
+//	        fmt.Printf("  Warnings: %v\n", plan.Warnings)
+//	    }
+//	}
+func (q *Queen) DryRun(ctx context.Context, direction string, limit int) ([]MigrationPlan, error) {
+	if q.driver == nil {
+		return nil, ErrNoDriver
+	}
+
+	if direction != "up" && direction != "down" {
+		return nil, fmt.Errorf("invalid direction: %s (must be 'up' or 'down')", direction)
+	}
+
+	if err := q.driver.Init(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := q.loadApplied(ctx); err != nil {
+		return nil, err
+	}
+
+	var migrations []*Migration
+	if direction == "up" {
+		migrations = q.getPending()
+	} else {
+		migrations = q.getAppliedMigrations()
+	}
+
+	if limit > 0 && limit < len(migrations) {
+		migrations = migrations[:limit]
+	}
+
+	plans := make([]MigrationPlan, len(migrations))
+	for i, m := range migrations {
+		plans[i] = q.createMigrationPlan(m, direction)
+	}
+
+	return plans, nil
+}
+
+// Explain returns a detailed migration plan for a specific version.
+//
+// This provides comprehensive information about a single migration,
+// including its SQL, type, warnings, and current status.
+//
+// Example:
+//
+//	plan, err := q.Explain(ctx, "001")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Printf("Migration: %s - %s\n", plan.Version, plan.Name)
+//	fmt.Printf("Status: %s\n", plan.Status)
+//	if plan.SQL != "" {
+//	    fmt.Printf("SQL:\n%s\n", plan.SQL)
+//	}
+func (q *Queen) Explain(ctx context.Context, version string) (*MigrationPlan, error) {
+	if q.driver == nil {
+		return nil, ErrNoDriver
+	}
+
+	if err := q.driver.Init(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := q.loadApplied(ctx); err != nil {
+		return nil, err
+	}
+
+	// Find the migration
+	var migration *Migration
+	for _, m := range q.migrations {
+		if m.Version == version {
+			migration = m
+			break
+		}
+	}
+
+	if migration == nil {
+		return nil, fmt.Errorf("migration not found: %s", version)
+	}
+
+	// Determine direction based on applied status
+	direction := "up"
+	if _, applied := q.applied[version]; applied {
+		direction = "down"
+	}
+
+	plan := q.createMigrationPlan(migration, direction)
+	return &plan, nil
 }
 
 // Close releases database resources.
@@ -523,18 +707,55 @@ func (q *Queen) getAppliedMigrations() []*Migration {
 	return applied
 }
 
+// getIsolationLevel returns the effective isolation level for a migration.
+// Priority: Migration.IsolationLevel -> Config.IsolationLevel -> LevelDefault
+func (q *Queen) getIsolationLevel(m *Migration) sql.IsolationLevel {
+	if m.IsolationLevel != sql.LevelDefault {
+		return m.IsolationLevel
+	}
+	if q.config.IsolationLevel != sql.LevelDefault {
+		return q.config.IsolationLevel
+	}
+	return sql.LevelDefault
+}
+
 // applyMigration applies a single migration.
 func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
-	// Execute migration in transaction
-	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
+	start := time.Now()
+	isolationLevel := q.getIsolationLevel(m)
+
+	logArgs := []any{
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "up",
+	}
+	if isolationLevel != sql.LevelDefault {
+		logArgs = append(logArgs, "isolation_level", isolationLevel.String())
+	}
+	q.logger.InfoContext(ctx, "migration started", logArgs...)
+
+	// Execute migration in transaction with specified isolation level
+	err := q.driver.Exec(ctx, isolationLevel, func(tx *sql.Tx) error {
 		return m.executeUp(ctx, tx)
 	})
 	if err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "up",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Record in database
 	if err := q.driver.Record(ctx, m); err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "up",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
@@ -546,26 +767,146 @@ func (q *Queen) applyMigration(ctx context.Context, m *Migration) error {
 		Checksum:  m.Checksum(),
 	}
 
+	q.logger.InfoContext(ctx, "migration completed",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "up",
+		"duration_ms", time.Since(start).Milliseconds())
+
 	return nil
 }
 
 // rollbackMigration rolls back a single migration.
 func (q *Queen) rollbackMigration(ctx context.Context, m *Migration) error {
-	// Execute rollback in transaction
-	err := q.driver.Exec(ctx, func(tx *sql.Tx) error {
+	start := time.Now()
+	isolationLevel := q.getIsolationLevel(m)
+
+	logArgs := []any{
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "down",
+	}
+	if isolationLevel != sql.LevelDefault {
+		logArgs = append(logArgs, "isolation_level", isolationLevel.String())
+	}
+	q.logger.InfoContext(ctx, "migration started", logArgs...)
+
+	// Execute rollback in transaction with specified isolation level
+	err := q.driver.Exec(ctx, isolationLevel, func(tx *sql.Tx) error {
 		return m.executeDown(ctx, tx)
 	})
 	if err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "down",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Remove from database
 	if err := q.driver.Remove(ctx, m.Version); err != nil {
+		q.logger.ErrorContext(ctx, "migration failed",
+			"version", m.Version,
+			"name", m.Name,
+			"direction", "down",
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return err
 	}
 
 	// Update cache
 	delete(q.applied, m.Version)
 
+	q.logger.InfoContext(ctx, "migration completed",
+		"version", m.Version,
+		"name", m.Name,
+		"direction", "down",
+		"duration_ms", time.Since(start).Milliseconds())
+
 	return nil
+}
+
+// createMigrationPlan creates a MigrationPlan from a Migration.
+func (q *Queen) createMigrationPlan(m *Migration, direction string) MigrationPlan {
+	plan := MigrationPlan{
+		Version:       m.Version,
+		Name:          m.Name,
+		Direction:     direction,
+		HasRollback:   m.HasRollback(),
+		IsDestructive: false,
+		Checksum:      m.Checksum(),
+		Warnings:      make([]string, 0),
+	}
+
+	// Determine status
+	if applied, ok := q.applied[m.Version]; ok {
+		plan.Status = "applied"
+		// Check for checksum mismatch
+		if applied.Checksum != m.Checksum() && m.Checksum() != noChecksumMarker {
+			plan.Status = "modified"
+			plan.Warnings = append(plan.Warnings, "Checksum mismatch - migration has been modified after being applied")
+			q.logger.WarnContext(context.Background(), "checksum mismatch in migration plan",
+				"version", m.Version,
+				"name", m.Name,
+				"expected_checksum", applied.Checksum,
+				"actual_checksum", m.Checksum())
+		}
+	} else {
+		plan.Status = "pending"
+	}
+
+	// Determine type and SQL based on direction
+	var sql string
+	hasSQL := false
+	hasFunc := false
+
+	if direction == "up" {
+		if m.UpSQL != "" {
+			hasSQL = true
+			sql = m.UpSQL
+		}
+		if m.UpFunc != nil {
+			hasFunc = true
+		}
+	} else {
+		if m.DownSQL != "" {
+			hasSQL = true
+			sql = m.DownSQL
+		}
+		if m.DownFunc != nil {
+			hasFunc = true
+		}
+		// Check for destructive operations in down migrations
+		plan.IsDestructive = m.IsDestructive()
+	}
+
+	// Set migration type
+	if hasSQL && hasFunc {
+		plan.Type = MigrationTypeMixed
+	} else if hasSQL {
+		plan.Type = MigrationTypeSQL
+	} else {
+		plan.Type = MigrationTypeGoFunc
+	}
+
+	plan.SQL = sql
+
+	// Collect warnings
+	if !plan.HasRollback {
+		plan.Warnings = append(plan.Warnings, "No rollback defined")
+	}
+
+	if plan.Type == MigrationTypeGoFunc || plan.Type == MigrationTypeMixed {
+		if m.ManualChecksum == "" {
+			plan.Warnings = append(plan.Warnings, "Go function without manual checksum")
+		}
+	}
+
+	if plan.IsDestructive && direction == "down" {
+		plan.Warnings = append(plan.Warnings, "Destructive operation")
+	}
+
+	return plan
 }

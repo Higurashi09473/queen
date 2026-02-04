@@ -135,6 +135,8 @@ func (app *App) addCommands() {
 		app.statusCmd(),
 		app.validateCmd(),
 		app.versionCmd(),
+		app.planCmd(),
+		app.explainCmd(),
 	)
 }
 
